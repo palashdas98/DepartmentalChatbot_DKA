@@ -3,7 +3,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
-loader = PyPDFLoader("data/manual.pdf")
+loader = PyPDFLoader("data/BS6_manual.pdf")
 docs = loader.load()
 
 splitter = RecursiveCharacterTextSplitter(
