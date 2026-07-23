@@ -1,24 +1,49 @@
+import os
+
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
-loader = PyPDFLoader("data/BS6_manual.pdf")
-docs = loader.load()
+all_docs = []
+
+pdf_folder = "pdfs"
+
+for file in os.listdir(pdf_folder):
+
+    if file.endswith(".pdf"):
+
+        path = os.path.join(pdf_folder, file)
+
+        loader = PyPDFLoader(path)
+
+        docs = loader.load()
+
+        for d in docs:
+            d.metadata["source"] = file
+
+        all_docs.extend(docs)
+
+print("Documents Loaded:", len(all_docs))
 
 splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=200
+    chunk_size=500,
+    chunk_overlap=100
 )
 
-chunks = splitter.split_documents(docs)
+chunks = splitter.split_documents(all_docs)
+
+print("Chunks Created:", len(chunks))
 
 embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+    model_name="sentence-transformers/all-mpnet-base-v2"
 )
 
-db = FAISS.from_documents(chunks, embeddings)
+db = FAISS.from_documents(
+    chunks,
+    embeddings
+)
 
 db.save_local("vectorstore")
 
-print("FAISS database created")
+print("Vectorstore Created Successfully")
