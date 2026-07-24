@@ -1,5 +1,5 @@
 import streamlit as st
-from collections import Counter
+from collections import defaultdict
 
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -7,7 +7,7 @@ from langchain_community.vectorstores import FAISS
 from llm import get_llm
 
 # =====================================================
-# PAGE CONFIGURATION
+# PAGE CONFIG
 # =====================================================
 
 st.set_page_config(
@@ -29,61 +29,69 @@ def load_vectorstore():
         model_name="sentence-transformers/all-mpnet-base-v2"
     )
 
-    vectorstore = FAISS.load_local(
+    db = FAISS.load_local(
         "vectorstore",
         embeddings,
         allow_dangerous_deserialization=True
     )
 
-    return vectorstore
+    return db
 
 try:
 
     vectorstore = load_vectorstore()
 
-    st.success("✅ Vector Database Loaded Successfully")
+    st.success(
+        "✅ Vector Database Loaded Successfully"
+    )
 
 except Exception as e:
 
-    st.error(f"Vector DB Load Error: {e}")
+    st.error(
+        f"Vector Database Load Error: {e}"
+    )
+
     st.stop()
 
 # =====================================================
-# QUESTION INPUT
+# QUESTION
 # =====================================================
 
 question = st.text_input(
     "Ask a question from your PDFs"
 )
 
-# =====================================================
-# PROCESS QUESTION
-# =====================================================
-
 if question:
 
-    search_query = f"""
+    # =================================================
+    # QUERY EXPANSION
+    # =================================================
+
+    expanded_query = f"""
 Question: {question}
 
-Related Terms:
+Synonyms:
 Fuel Economy
-FE
 FLE
+FE
 Mileage
 Fuel Consumption
 Road Speed
-Maximum Speed
+Road Speed Governor
 Vehicle Speed
-Speed Governor
-Performance
+Maximum Speed
 BSFC
-Fuel Efficiency
+Performance
 """
+    
+    # =================================================
+    # RETRIEVAL
+    # =================================================
 
-    with st.spinner("Searching Documents..."):
+    with st.spinner("Searching Knowledge Base..."):
 
         docs = vectorstore.max_marginal_relevance_search(
-            search_query,
+            expanded_query,
             k=15,
             fetch_k=50
         )
@@ -99,10 +107,11 @@ Fuel Efficiency
         st.error(
             "No matching documents found."
         )
+
         st.stop()
 
     # =================================================
-    # RETRIEVED CHUNKS
+    # SHOW RETRIEVED CHUNKS
     # =================================================
 
     with st.expander("Retrieved Chunks"):
@@ -113,16 +122,32 @@ Fuel Efficiency
                 f"### Chunk {i+1}"
             )
 
-            st.write(
-                f"Source: {doc.metadata.get('source','Unknown')}"
+            source = doc.metadata.get(
+                "source",
+                "Unknown"
             )
 
-            st.write(doc.page_content)
+            page = doc.metadata.get(
+                "page",
+                "N/A"
+            )
+
+            st.write(
+                f"📄 Source: {source}"
+            )
+
+            st.write(
+                f"📖 Page: {page}"
+            )
+
+            st.write(
+                doc.page_content
+            )
 
             st.divider()
 
     # =================================================
-    # CONTEXT BUILDING
+    # BUILD CONTEXT
     # =================================================
 
     context = ""
@@ -134,13 +159,21 @@ Fuel Efficiency
             "Unknown"
         )
 
-        context += (
-            f"\nSOURCE FILE: {source}\n"
+        page = doc.metadata.get(
+            "page",
+            "N/A"
         )
 
-        context += doc.page_content
+        chunk_text = doc.page_content
 
-        context += "\n\n"
+        context += f"""
+SOURCE DOCUMENT: {source}
+PAGE NUMBER: {page}
+
+{chunk_text}
+
+======================================================
+"""
 
     st.write(
         "Context Length:",
@@ -150,28 +183,43 @@ Fuel Efficiency
     with st.expander(
         "Context Sent To LLM"
     ):
-        st.write(context)
+        st.text(context)
+
+    # =================================================
+    # PRIMARY SOURCE
+    # =================================================
+
+    top_doc = docs[0]
+
+    primary_source = top_doc.metadata.get(
+        "source",
+        "Unknown"
+    )
+
+    primary_page = top_doc.metadata.get(
+        "page",
+        "N/A"
+    )
 
     # =================================================
     # PROMPT
     # =================================================
 
     prompt = f"""
-You are a Tata Motors Departmental Knowledge Assistant.
+You are a Tata Motors departmental knowledge assistant.
 
 Instructions:
 
-1. Use ONLY information from the supplied context.
-2. Combine information from multiple chunks.
-3. Mention important numbers exactly.
-4. Mention limits exactly.
-5. Mention units exactly.
-6. If information exists partially, provide the available information.
-7. Do NOT invent information.
-8. Mention the most relevant source document.
-9. Use bullet points whenever possible.
-10. Only say 'Information not found in documents'
-    when absolutely nothing relevant exists.
+1. Use ONLY the supplied context.
+2. Never invent information.
+3. Combine information from multiple chunks when required.
+4. Mention exact values and units.
+5. Mention exact limits and specifications.
+6. If answer exists partially, provide the available information.
+7. Use bullet points whenever possible.
+8. At the end mention source document and page number.
+9. If answer is not available, say:
+   'Information not found in documents.'
 
 CONTEXT:
 {context}
@@ -179,11 +227,20 @@ CONTEXT:
 QUESTION:
 {question}
 
-ANSWER:
+ANSWER FORMAT:
+
+Answer:
+<answer>
+
+Source:
+<source file>
+
+Page:
+<page number>
 """
 
     # =================================================
-    # GROQ LLM
+    # CALL GROQ
     # =================================================
 
     try:
@@ -202,13 +259,23 @@ ANSWER:
             f"LLM Error: {e}"
         )
 
+        st.stop()
+
     # =================================================
-    # SOURCE DOCUMENTS
+    # PRIMARY SOURCE
     # =================================================
 
-    st.subheader("Source Documents")
+    st.subheader("Primary Source")
 
-    source_counter = Counter()
+    st.info(
+        f"📄 {primary_source} | 📖 Page {primary_page}"
+    )
+
+    # =================================================
+    # ALL RETRIEVED SOURCES
+    # =================================================
+
+    source_pages = defaultdict(set)
 
     for doc in docs:
 
@@ -217,19 +284,21 @@ ANSWER:
             "Unknown"
         )
 
-        source_counter[source] += 1
+        page = doc.metadata.get(
+            "page",
+            "N/A"
+        )
 
-    best_source = max(
-        source_counter,
-        key=source_counter.get
-    )
+        source_pages[source].add(page)
 
-    st.info(
-        f"Most Relevant Source: {best_source}"
-    )
+    st.subheader("Retrieved Sources")
 
-    for source, count in source_counter.items():
+    for source, pages in source_pages.items():
+
+        page_list = sorted(
+            list(pages)
+        )
 
         st.write(
-            f"📄 {source}  (Relevant Chunks: {count})"
+            f"📄 {source} | Pages: {page_list}"
         )
