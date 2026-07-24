@@ -38,12 +38,18 @@ class LLMWrapper:
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "You are a Tata Motors departmental assistant. "
-                            "Answer only from the supplied context. "
-                            "If the answer exists in the context, summarize it clearly. "
-                            "Do not invent information."
-                        )
+                        "content": """
+You are a Tata Motors departmental knowledge assistant.
+
+Rules:
+1. Answer only using the supplied context.
+2. Never hallucinate.
+3. Mention exact values and limits.
+4. Mention source document if available.
+5. Combine information across chunks.
+6. If answer is not found, clearly say:
+   'Information not found in documents.'
+"""
                     },
                     {
                         "role": "user",
@@ -60,8 +66,9 @@ class LLMWrapper:
 
             return f"Groq Error: {str(e)}"
 
+
 # ===========================================
-# GET LLM
+# RETURN MODEL
 # ===========================================
 
 def get_llm():
