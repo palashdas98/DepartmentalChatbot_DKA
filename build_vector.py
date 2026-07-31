@@ -27,8 +27,8 @@ for file in os.listdir(pdf_folder):
 print("Documents Loaded:", len(all_docs))
 
 splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=100
+    chunk_size=1000,
+    chunk_overlap=200
 )
 
 chunks = splitter.split_documents(all_docs)
