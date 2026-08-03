@@ -7,4 +7,3 @@ langchain-huggingface
 sentence-transformers
 groq
 python-dotenv
-torch torchvision
