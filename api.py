@@ -1,85 +1,268 @@
-from fastapi import FastAPI
+from collections import defaultdict
+
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 
 from llm import get_llm
 
-# -------------------------------------------------
-# Create FastAPI Application
-# -------------------------------------------------
+# =====================================================
+# FASTAPI APP
+# =====================================================
 
 app = FastAPI(
-    title="Departmental RAG Chatbot",
-    description="RAG API using FAISS + Groq",
+    title="Department Knowledge Assistant",
+    description="RAG Chatbot API using FAISS + Groq",
     version="1.0"
 )
 
-# -------------------------------------------------
-# Load Vector Database Once at Startup
-# -------------------------------------------------
-
-embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-
-vectorstore = FAISS.load_local(
-    "vectorstore",
-    embedding_model,
-    allow_dangerous_deserialization=True
-)
-
-# -------------------------------------------------
-# Input Schema
-# -------------------------------------------------
+# =====================================================
+# REQUEST MODEL
+# =====================================================
 
 class QuestionRequest(BaseModel):
     question: str
 
-# -------------------------------------------------
-# Health Check
-# -------------------------------------------------
+# =====================================================
+# LOAD VECTOR DATABASE
+# =====================================================
+
+print("Loading Vector Database...")
+
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-mpnet-base-v2"
+)
+
+vectorstore = FAISS.load_local(
+    "vectorstore",
+    embeddings,
+    allow_dangerous_deserialization=True
+)
+
+print("Vector Database Loaded Successfully")
+
+# =====================================================
+# ROOT ENDPOINT
+# =====================================================
 
 @app.get("/")
 def home():
+
     return {
-        "message": "Departmental Chatbot API Running"
+        "status": "running",
+        "message": "Department Knowledge Assistant API"
     }
 
-# -------------------------------------------------
-# Chat Endpoint
-# -------------------------------------------------
+# =====================================================
+# HEALTH CHECK
+# =====================================================
+
+@app.get("/health")
+def health():
+
+    return {
+        "status": "healthy"
+    }
+
+# =====================================================
+# CHAT ENDPOINT
+# =====================================================
 
 @app.post("/chat")
 def chat(request: QuestionRequest):
 
-    user_question = request.question
+    try:
 
-    docs = vectorstore.similarity_search(
-        user_question,
-        k=3
-    )
+        question = request.question.strip()
 
-    context = "\n\n".join(
-        [doc.page_content for doc in docs]
-    )
+        if not question:
+            raise HTTPException(
+                status_code=400,
+                detail="Question cannot be empty"
+            )
 
-    prompt = f"""
-    Answer the question using only the context below.
+        # =============================================
+        # QUERY EXPANSION
+        # =============================================
 
-    Context:
-    {context}
+        expanded_query = f"""
+Question: {question}
 
-    Question:
-    {user_question}
-    """
+Synonyms:
+Fuel Economy
+FLE
+FE
+Mileage
+Fuel Consumption
+Road Speed
+Road Speed Governor
+Vehicle Speed
+Maximum Speed
+BSFC
+Performance
+"""
 
-    llm = get_llm()
+        # =============================================
+        # RETRIEVAL
+        # =============================================
 
-    response = llm.invoke(prompt)
+        docs = vectorstore.max_marginal_relevance_search(
+            expanded_query,
+            k=15,
+            fetch_k=50
+        )
 
-    return {
-        "question": user_question,
-        "answer": response
-    }
+        if len(docs) == 0:
+
+            return {
+                "question": question,
+                "answer": "Information not found in documents.",
+                "sources": []
+            }
+
+        # =============================================
+        # BUILD CONTEXT
+        # =============================================
+
+        context = ""
+
+        for doc in docs:
+
+            source = doc.metadata.get(
+                "source",
+                "Unknown"
+            )
+
+            page = doc.metadata.get(
+                "page",
+                "N/A"
+            )
+
+            context += f"""
+SOURCE DOCUMENT: {source}
+
+PAGE NUMBER: {page}
+
+{doc.page_content}
+
+===================================================
+"""
+
+        # =============================================
+        # PRIMARY SOURCE
+        # =============================================
+
+        top_doc = docs[0]
+
+        primary_source = top_doc.metadata.get(
+            "source",
+            "Unknown"
+        )
+
+        primary_page = top_doc.metadata.get(
+            "page",
+            "N/A"
+        )
+
+        # =============================================
+        # PROMPT
+        # =============================================
+
+        prompt = f"""
+You are a Tata Motors departmental knowledge assistant.
+
+Instructions:
+
+1. Use ONLY the supplied context.
+2. Never invent information.
+3. Combine information from multiple chunks when required.
+4. Mention exact values and units.
+5. Mention exact limits and specifications.
+6. If answer exists partially, provide available information.
+7. Use bullet points whenever possible.
+8. Mention source document and page number.
+9. If answer is not available, say:
+   'Information not found in documents.'
+
+CONTEXT:
+
+{context}
+
+QUESTION:
+
+{question}
+
+ANSWER FORMAT:
+
+Answer:
+<answer>
+
+Source:
+<source>
+
+Page:
+<page>
+"""
+
+        # =============================================
+        # CALL LLM
+        # =============================================
+
+        llm = get_llm()
+
+        answer = llm.invoke(prompt)
+
+        # =============================================
+        # COLLECT SOURCES
+        # =============================================
+
+        source_pages = defaultdict(set)
+
+        for doc in docs:
+
+            source = doc.metadata.get(
+                "source",
+                "Unknown"
+            )
+
+            page = doc.metadata.get(
+                "page",
+                "N/A"
+            )
+
+            source_pages[source].add(page)
+
+        retrieved_sources = []
+
+        for source, pages in source_pages.items():
+
+            retrieved_sources.append(
+                {
+                    "source": source,
+                    "pages": sorted(
+                        list(pages)
+                    )
+                }
+            )
+
+        # =============================================
+        # RESPONSE
+        # =============================================
+
+        return {
+            "question": question,
+            "answer": answer,
+            "primary_source": primary_source,
+            "primary_page": primary_page,
+            "retrieved_chunks": len(docs),
+            "retrieved_sources": retrieved_sources
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
