@@ -31,15 +31,20 @@ class QuestionRequest(BaseModel):
 
 print("Loading Vector Database...")
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+vectorstore = None
+def get_vectorstore():
+    global vectorstore
+    if vectorstore is None:
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
 
-vectorstore = FAISS.load_local(
-    "vectorstore",
-    embeddings,
-    allow_dangerous_deserialization=True
-)
+        vectorstore = FAISS.load_local(
+            "vectorstore",
+            embeddings,
+            allow_dangerous_deserialization=True
+        )
+    return vectorstore
 
 print("Vector Database Loaded Successfully")
 
@@ -108,10 +113,12 @@ Performance
         # RETRIEVAL
         # =============================================
 
-        docs = vectorstore.max_marginal_relevance_search(
+        db = get_vectorstore()
+
+        docs = db.max_marginal_relevance_search(
             expanded_query,
-            k=15,
-            fetch_k=50
+            k=5,
+            fetch_k=15
         )
 
         if len(docs) == 0:
