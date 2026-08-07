@@ -1,4 +1,5 @@
 from collections import defaultdict
+import traceback
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -266,9 +267,14 @@ Page:
             "retrieved_chunks": len(docs),
             "retrieved_sources": retrieved_sources
         }
-
+        
     except Exception as e:
+        import traceback
+        
+        print("ERROR:")
 
+        print(traceback.format_exc())
+    
         raise HTTPException(
             status_code=500,
             detail=str(e)
