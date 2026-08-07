@@ -32,7 +32,7 @@ class QuestionRequest(BaseModel):
 print("Loading Vector Database...")
 
 embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-mpnet-base-v2"
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
 vectorstore = FAISS.load_local(

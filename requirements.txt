@@ -9,6 +9,3 @@ langchain-huggingface
 faiss-cpu
 sentence-transformers
 torch
-pypdf
-PyPDF2
-streamlit
