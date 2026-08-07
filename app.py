@@ -26,7 +26,7 @@ st.title("🤖 Department Knowledge Assistant")
 def load_vectorstore():
 
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-mpnet-base-v2"
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
     db = FAISS.load_local(
@@ -70,7 +70,15 @@ if question:
     expanded_query = f"""
 Question: {question}
 
-Synonyms:
+Related Terms:
+Acceleration
+0-60 kmph
+0-60 km/h
+Performance
+Vehicle Performance
+Test Results
+Speed
+Acceleration Time
 Fuel Economy
 FLE
 FE
@@ -81,7 +89,6 @@ Road Speed Governor
 Vehicle Speed
 Maximum Speed
 BSFC
-Performance
 """
     
     # =================================================
@@ -90,7 +97,7 @@ Performance
 
     with st.spinner("Searching Knowledge Base..."):
 
-        docs = vectorstore.max_marginal_relevance_search(
+        docs = vectorstore.similarity_search(
             expanded_query,
             k=15,
             fetch_k=50

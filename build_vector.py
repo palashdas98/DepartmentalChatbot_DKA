@@ -13,6 +13,8 @@ for file in os.listdir(pdf_folder):
 
     if file.endswith(".pdf"):
 
+        print(f"Loading PDF: {file}")
+        
         path = os.path.join(pdf_folder, file)
 
         loader = PyPDFLoader(path)
