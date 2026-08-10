@@ -1,14 +1,11 @@
 import streamlit as st
 from collections import defaultdict
+import re
 
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
 from llm import get_llm
-
-# =====================================================
-# PAGE CONFIG
-# =====================================================
 
 st.set_page_config(
     page_title="Department Knowledge Assistant",
@@ -18,9 +15,6 @@ st.set_page_config(
 
 st.title("🤖 Department Knowledge Assistant")
 
-# =====================================================
-# LOAD VECTOR DATABASE
-# =====================================================
 
 @st.cache_resource
 def load_vectorstore():
@@ -36,6 +30,7 @@ def load_vectorstore():
     )
 
     return db
+
 
 try:
 
@@ -53,9 +48,6 @@ except Exception as e:
 
     st.stop()
 
-# =====================================================
-# QUESTION
-# =====================================================
 
 question = st.text_input(
     "Ask a question from your PDFs"
@@ -63,103 +55,63 @@ question = st.text_input(
 
 if question:
 
-    # =================================================
-    # QUERY EXPANSION
-    # =================================================
+    with st.spinner(
+        "Searching Knowledge Base..."
+    ):
 
-    expanded_query = f"""
-Question: {question}
-
-Related Terms:
-Acceleration
-0-60 kmph
-0-60 km/h
-Performance
-Vehicle Performance
-Test Results
-Speed
-Acceleration Time
-Fuel Economy
-FLE
-FE
-Mileage
-Fuel Consumption
-Road Speed
-Road Speed Governor
-Vehicle Speed
-Maximum Speed
-BSFC
-"""
-    
-    # =================================================
-    # RETRIEVAL
-    # =================================================
-
-    with st.spinner("Searching Knowledge Base..."):
-
-        docs = vectorstore.similarity_search(
-            expanded_query,
-            k=15,
-            fetch_k=50
+        results = vectorstore.similarity_search_with_score(
+            question,
+            k=4
         )
 
-    st.subheader("Debug Information")
+    docs = [doc for doc, score in results]
 
-    st.write(
-        f"Retrieved Chunks: {len(docs)}"
-    )
+    # ==========================
+    # DEBUG SECTION (HIDDEN)
+    # ==========================
 
-    if len(docs) == 0:
+    with st.expander("⚙️ Debug Information", expanded=False):
 
-        st.error(
-            "No matching documents found."
+        st.write(
+            f"Retrieved Chunks: {len(docs)}"
         )
 
-        st.stop()
+        with st.expander("Retrieved Chunks"):
 
-    # =================================================
-    # SHOW RETRIEVED CHUNKS
-    # =================================================
+            for i, (doc, score) in enumerate(results):
 
-    with st.expander("Retrieved Chunks"):
+                st.markdown(
+                    f"### Chunk {i+1}"
+                )
 
-        for i, doc in enumerate(docs):
+                st.write(
+                    f"Score: {round(score,4)}"
+                )
 
-            st.markdown(
-                f"### Chunk {i+1}"
-            )
+                st.write(
+                    f"Source: {doc.metadata.get('source')}"
+                )
 
-            source = doc.metadata.get(
-                "source",
-                "Unknown"
-            )
+                st.write(
+                    f"Page: {doc.metadata.get('page')}"
+                )
 
-            page = doc.metadata.get(
-                "page",
-                "N/A"
-            )
+                st.write(doc.page_content)
 
-            st.write(
-                f"📄 Source: {source}"
-            )
+                st.divider()
 
-            st.write(
-                f"📖 Page: {page}"
-            )
+    context_parts = []
 
-            st.write(
-                doc.page_content
-            )
-
-            st.divider()
-
-    # =================================================
-    # BUILD CONTEXT
-    # =================================================
-
-    context = ""
+    seen = set()
 
     for doc in docs:
+
+        chunk = doc.page_content.strip()
+
+        if chunk in seen:
+            continue
+
+        seen.add(chunk)
 
         source = doc.metadata.get(
             "source",
@@ -171,90 +123,56 @@ BSFC
             "N/A"
         )
 
-        chunk_text = doc.page_content
+        context_parts.append(
+            f"""
+SOURCE: {source}
+PAGE: {page}
 
-        context += f"""
-SOURCE DOCUMENT: {source}
-PAGE NUMBER: {page}
-
-{chunk_text}
-
-======================================================
+{chunk}
 """
+        )
 
-    st.write(
-        "Context Length:",
-        len(context)
-    )
-
-    with st.expander(
-        "Context Sent To LLM"
-    ):
-        st.text(context)
-
-    # =================================================
-    # PRIMARY SOURCE
-    # =================================================
-
-    top_doc = docs[0]
-
-    primary_source = top_doc.metadata.get(
-        "source",
-        "Unknown"
-    )
-
-    primary_page = top_doc.metadata.get(
-        "page",
-        "N/A"
-    )
-
-    # =================================================
-    # PROMPT
-    # =================================================
+    context = "\n\n".join(context_parts)
 
     prompt = f"""
-You are a Tata Motors departmental knowledge assistant.
+You are a Tata Motors Department Knowledge Assistant.
 
-Instructions:
+Answer only from the provided context.
 
-1. Use ONLY the supplied context.
-2. Never invent information.
-3. Combine information from multiple chunks when required.
-4. Mention exact values and units.
-5. Mention exact limits and specifications.
-6. If answer exists partially, provide the available information.
-7. Use bullet points whenever possible.
-8. At the end mention source document and page number.
-9. If answer is not available, say:
-   'Information not found in documents.'
+Give a concise and direct answer.
+
+DO NOT mention:
+- Source file names
+- PDF names
+- Page numbers
+- References
+
+If information is not available, reply exactly:
+
+Information not found in documents.
 
 CONTEXT:
+
 {context}
 
 QUESTION:
+
 {question}
-
-ANSWER FORMAT:
-
-Answer:
-<answer>
-
-Source:
-<source file>
-
-Page:
-<page number>
 """
-
-    # =================================================
-    # CALL GROQ
-    # =================================================
 
     try:
 
         llm = get_llm()
 
         answer = llm.invoke(prompt)
+
+        # Remove any source references if LLM still adds them
+        answer = re.sub(
+            r"\(Source:.*?\)",
+            "",
+            answer,
+            flags=re.IGNORECASE
+        ).strip()
 
         st.subheader("Answer")
 
@@ -268,19 +186,9 @@ Page:
 
         st.stop()
 
-    # =================================================
-    # PRIMARY SOURCE
-    # =================================================
-
-    st.subheader("Primary Source")
-
-    st.info(
-        f"📄 {primary_source} | 📖 Page {primary_page}"
-    )
-
-    # =================================================
-    # ALL RETRIEVED SOURCES
-    # =================================================
+    # ==========================
+    # SOURCES DROPDOWN
+    # ==========================
 
     source_pages = defaultdict(set)
 
@@ -298,14 +206,13 @@ Page:
 
         source_pages[source].add(page)
 
-    st.subheader("Retrieved Sources")
+    with st.expander(
+        "📚 Retrieved Sources (Click to Expand)",
+        expanded=False
+    ):
 
-    for source, pages in source_pages.items():
+        for source, pages in source_pages.items():
 
-        page_list = sorted(
-            list(pages)
-        )
-
-        st.write(
-            f"📄 {source} | Pages: {page_list}"
-        )
+            st.write(
+                f"📄 {source} | Pages: {sorted(list(pages))}"
+            )

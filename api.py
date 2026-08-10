@@ -93,22 +93,8 @@ def chat(request: QuestionRequest):
         # QUERY EXPANSION
         # =============================================
 
-        expanded_query = f"""
-Question: {question}
+        expanded_query = question
 
-Synonyms:
-Fuel Economy
-FLE
-FE
-Mileage
-Fuel Consumption
-Road Speed
-Road Speed Governor
-Vehicle Speed
-Maximum Speed
-BSFC
-Performance
-"""
 
         # =============================================
         # RETRIEVAL
@@ -116,10 +102,9 @@ Performance
 
         db = get_vectorstore()
 
-        docs = db.max_marginal_relevance_search(
+        docs = vectorstore.similarity_search_with_score(
             expanded_query,
-            k=5,
-            fetch_k=15
+            k=4
         )
 
         if len(docs) == 0:
@@ -270,7 +255,6 @@ Page:
         
     except Exception as e:
         import traceback
-        
         print("ERROR:")
 
         print(traceback.format_exc())

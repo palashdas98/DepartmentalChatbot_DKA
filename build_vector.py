@@ -9,33 +9,35 @@ all_docs = []
 
 pdf_folder = "pdfs"
 
+print("\nLoading PDFs...\n")
+
 for file in os.listdir(pdf_folder):
 
-    if file.endswith(".pdf"):
+    if file.lower().endswith(".pdf"):
 
         print(f"Loading PDF: {file}")
-        
+
         path = os.path.join(pdf_folder, file)
 
         loader = PyPDFLoader(path)
 
         docs = loader.load()
 
-        for d in docs:
-            d.metadata["source"] = file
+        for doc in docs:
+            doc.metadata["source"] = file
 
         all_docs.extend(docs)
 
-print("Documents Loaded:", len(all_docs))
+print(f"\nDocuments Loaded: {len(all_docs)}")
 
 splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=200
+    chunk_size=500,
+    chunk_overlap=100
 )
 
 chunks = splitter.split_documents(all_docs)
 
-print("Chunks Created:", len(chunks))
+print(f"Chunks Created: {len(chunks)}")
 
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -48,4 +50,4 @@ db = FAISS.from_documents(
 
 db.save_local("vectorstore")
 
-print("Vectorstore Created Successfully")
+print("\nVectorstore Created Successfully")
