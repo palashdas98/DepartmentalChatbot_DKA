@@ -1,35 +1,32 @@
-from groq import Groq
-from dotenv import load_dotenv
 import os
 
-# ===========================================
-# LOAD ENVIRONMENT VARIABLES
-# ===========================================
+from groq import Groq
+from dotenv import load_dotenv
+
+# ======================================================
+# LOAD ENV
+# ======================================================
 
 load_dotenv()
 
-api_key = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-if not api_key:
-    try:
-        import streamlit as st
-        api_key = st.secrets["GROQ_API_KEY"]
-    except:
-        pass
-if not api_key:
-    raise ValueError("GROQ_API_KEY not found")        
+if not GROQ_API_KEY:
+    raise ValueError(
+        "GROQ_API_KEY not found in Environment Variables"
+    )
 
-# ===========================================
-# GROQ CLIENT
-# ===========================================
+# ======================================================
+# CREATE CLIENT ONCE
+# ======================================================
 
 client = Groq(
-    api_key=api_key
+    api_key=GROQ_API_KEY
 )
 
-# ===========================================
+# ======================================================
 # LLM WRAPPER
-# ===========================================
+# ======================================================
 
 class LLMWrapper:
 
@@ -43,16 +40,15 @@ class LLMWrapper:
                     {
                         "role": "system",
                         "content": """
-You are a Tata Motors departmental knowledge assistant.
+You are a Tata Motors Department Knowledge Assistant.
 
 Rules:
-1. Answer only using the supplied context.
+1. Use only provided context.
 2. Never hallucinate.
-3. Mention exact values and limits.
+3. Mention values exactly.
 4. Mention source document if available.
-5. Combine information across chunks.
-6. If answer is not found, clearly say:
-   'Information not found in documents.'
+5. If answer not found say:
+Information not found in documents.
 """
                     },
                     {
@@ -61,19 +57,23 @@ Rules:
                     }
                 ],
                 temperature=0,
-                max_tokens=2000
+                max_tokens=1000
             )
 
             return response.choices[0].message.content
 
         except Exception as e:
 
-            return f"Groq Error: {str(e)}"
+            print("GROQ ERROR:")
+            print(str(e))
 
+            raise Exception(
+                f"Groq API Error: {str(e)}"
+            )
 
-# ===========================================
-# RETURN MODEL
-# ===========================================
+# ======================================================
+# GET MODEL
+# ======================================================
 
 def get_llm():
     return LLMWrapper()

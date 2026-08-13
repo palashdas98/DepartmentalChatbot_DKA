@@ -1,6 +1,4 @@
 from collections import defaultdict
-import traceback
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -27,53 +25,52 @@ class QuestionRequest(BaseModel):
     question: str
 
 # =====================================================
-# LOAD VECTOR DATABASE
+# LOAD EMBEDDINGS ONCE
+# =====================================================
+
+print("Loading Embedding Model...")
+
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
+
+# =====================================================
+# LOAD FAISS VECTORSTORE ONCE
 # =====================================================
 
 print("Loading Vector Database...")
 
-vectorstore = None
-def get_vectorstore():
-    global vectorstore
-    if vectorstore is None:
-        embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
-
-        vectorstore = FAISS.load_local(
-            "vectorstore",
-            embeddings,
-            allow_dangerous_deserialization=True
-        )
-    return vectorstore
+vectorstore = FAISS.load_local(
+    "vectorstore",
+    embeddings,
+    allow_dangerous_deserialization=True
+)
 
 print("Vector Database Loaded Successfully")
 
 # =====================================================
-# ROOT ENDPOINT
+# ROOT
 # =====================================================
 
 @app.get("/")
 def home():
-
     return {
         "status": "running",
         "message": "Department Knowledge Assistant API"
     }
 
 # =====================================================
-# HEALTH CHECK
+# HEALTH
 # =====================================================
 
 @app.get("/health")
 def health():
-
     return {
         "status": "healthy"
     }
 
 # =====================================================
-# CHAT ENDPOINT
+# CHAT
 # =====================================================
 
 @app.post("/chat")
@@ -89,35 +86,29 @@ def chat(request: QuestionRequest):
                 detail="Question cannot be empty"
             )
 
-        # =============================================
-        # QUERY EXPANSION
-        # =============================================
+        print(f"Question Received: {question}")
 
-        expanded_query = question
+        # ===========================================
+        # RETRIEVE RELEVANT DOCUMENTS
+        # ===========================================
 
-
-        # =============================================
-        # RETRIEVAL
-        # =============================================
-
-        db = get_vectorstore()
-
-        docs = vectorstore.similarity_search_with_score(
-            expanded_query,
+        results = vectorstore.similarity_search_with_score(
+            question,
             k=4
         )
 
-        if len(docs) == 0:
-
+        if not results:
             return {
                 "question": question,
                 "answer": "Information not found in documents.",
                 "sources": []
             }
 
-        # =============================================
+        docs = [doc for doc, score in results]
+
+        # ===========================================
         # BUILD CONTEXT
-        # =============================================
+        # ===========================================
 
         context = ""
 
@@ -140,12 +131,12 @@ PAGE NUMBER: {page}
 
 {doc.page_content}
 
-===================================================
+=================================================
 """
 
-        # =============================================
-        # PRIMARY SOURCE
-        # =============================================
+        # ===========================================
+        # TOP DOCUMENT
+        # ===========================================
 
         top_doc = docs[0]
 
@@ -159,25 +150,17 @@ PAGE NUMBER: {page}
             "N/A"
         )
 
-        # =============================================
+        # ===========================================
         # PROMPT
-        # =============================================
+        # ===========================================
 
         prompt = f"""
-You are a Tata Motors departmental knowledge assistant.
+You are a Tata Motors Department Knowledge Assistant.
 
-Instructions:
+Use ONLY the context below.
 
-1. Use ONLY the supplied context.
-2. Never invent information.
-3. Combine information from multiple chunks when required.
-4. Mention exact values and units.
-5. Mention exact limits and specifications.
-6. If answer exists partially, provide available information.
-7. Use bullet points whenever possible.
-8. Mention source document and page number.
-9. If answer is not available, say:
-   'Information not found in documents.'
+If answer is unavailable, say:
+Information not found in documents.
 
 CONTEXT:
 
@@ -186,30 +169,19 @@ CONTEXT:
 QUESTION:
 
 {question}
-
-ANSWER FORMAT:
-
-Answer:
-<answer>
-
-Source:
-<source>
-
-Page:
-<page>
 """
 
-        # =============================================
-        # CALL LLM
-        # =============================================
+        # ===========================================
+        # LLM RESPONSE
+        # ===========================================
 
         llm = get_llm()
 
         answer = llm.invoke(prompt)
 
-        # =============================================
-        # COLLECT SOURCES
-        # =============================================
+        # ===========================================
+        # SOURCES
+        # ===========================================
 
         source_pages = defaultdict(set)
 
@@ -234,15 +206,13 @@ Page:
             retrieved_sources.append(
                 {
                     "source": source,
-                    "pages": sorted(
-                        list(pages)
-                    )
+                    "pages": sorted(list(pages))
                 }
             )
 
-        # =============================================
+        # ===========================================
         # RESPONSE
-        # =============================================
+        # ===========================================
 
         return {
             "question": question,
@@ -252,13 +222,16 @@ Page:
             "retrieved_chunks": len(docs),
             "retrieved_sources": retrieved_sources
         }
-        
-    except Exception as e:
-        import traceback
-        print("ERROR:")
 
+    except Exception as e:
+
+        import traceback
+
+        print("===================================")
+        print("CHAT ERROR")
         print(traceback.format_exc())
-    
+        print("===================================")
+
         raise HTTPException(
             status_code=500,
             detail=str(e)
