@@ -3,10 +3,6 @@ import os
 from groq import Groq
 from dotenv import load_dotenv
 
-# ======================================================
-# LOAD ENV
-# ======================================================
-
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -16,17 +12,12 @@ if not GROQ_API_KEY:
         "GROQ_API_KEY not found in Environment Variables"
     )
 
-# ======================================================
-# CREATE CLIENT ONCE
-# ======================================================
-
 client = Groq(
     api_key=GROQ_API_KEY
 )
 
-# ======================================================
-# LLM WRAPPER
-# ======================================================
+MODEL_NAME = "openai/gpt-oss-120b"
+
 
 class LLMWrapper:
 
@@ -35,19 +26,22 @@ class LLMWrapper:
         try:
 
             response = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model=MODEL_NAME,
                 messages=[
                     {
                         "role": "system",
                         "content": """
-You are a Tata Motors Department Knowledge Assistant.
+You are Tata Motors Department Knowledge Assistant.
 
 Rules:
-1. Use only provided context.
+
+1. Use ONLY the supplied context.
 2. Never hallucinate.
-3. Mention values exactly.
-4. Mention source document if available.
-5. If answer not found say:
+3. Give exact values from documents.
+4. Extract data correctly from tables.
+5. Give concise and direct answers.
+6. If information is not available, reply exactly:
+
 Information not found in documents.
 """
                     },
@@ -60,20 +54,24 @@ Information not found in documents.
                 max_tokens=1000
             )
 
-            return response.choices[0].message.content
+            return (
+                response
+                .choices[0]
+                .message
+                .content
+                .strip()
+            )
 
         except Exception as e:
 
-            print("GROQ ERROR:")
+            print("\n========== GROQ ERROR ==========")
             print(str(e))
+            print("================================\n")
 
             raise Exception(
                 f"Groq API Error: {str(e)}"
             )
 
-# ======================================================
-# GET MODEL
-# ======================================================
 
 def get_llm():
     return LLMWrapper()

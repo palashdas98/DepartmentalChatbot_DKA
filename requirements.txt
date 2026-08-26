@@ -11,3 +11,5 @@ torch
 pypdf
 PyPDF2
 pydantic
+rank-bm25
+streamlit

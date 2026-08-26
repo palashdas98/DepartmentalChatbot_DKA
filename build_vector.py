@@ -1,9 +1,20 @@
 import os
 
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import (
+    PyPDFLoader
+)
+
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter
+)
+
+from langchain_huggingface import (
+    HuggingFaceEmbeddings
+)
+
+from langchain_community.vectorstores import (
+    FAISS
+)
 
 all_docs = []
 
@@ -17,30 +28,40 @@ for file in os.listdir(pdf_folder):
 
         print(f"Loading PDF: {file}")
 
-        path = os.path.join(pdf_folder, file)
+        path = os.path.join(
+            pdf_folder,
+            file
+        )
 
         loader = PyPDFLoader(path)
 
         docs = loader.load()
 
         for doc in docs:
+
             doc.metadata["source"] = file
 
         all_docs.extend(docs)
 
-print(f"\nDocuments Loaded: {len(all_docs)}")
-
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=100
+print(
+    f"\nDocuments Loaded: {len(all_docs)}"
 )
 
-chunks = splitter.split_documents(all_docs)
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1500,
+    chunk_overlap=300
+)
 
-print(f"Chunks Created: {len(chunks)}")
+chunks = splitter.split_documents(
+    all_docs
+)
+
+print(
+    f"Chunks Created: {len(chunks)}"
+)
 
 embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+    model_name="BAAI/bge-base-en-v1.5"
 )
 
 db = FAISS.from_documents(
@@ -48,6 +69,10 @@ db = FAISS.from_documents(
     embeddings
 )
 
-db.save_local("vectorstore")
+db.save_local(
+    "vectorstore"
+)
 
-print("\nVectorstore Created Successfully")
+print(
+    "\n✅ Vectorstore Created Successfully"
+)

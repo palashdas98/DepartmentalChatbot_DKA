@@ -1,44 +1,39 @@
 from collections import defaultdict
-from fastapi import FastAPI, HTTPException
+
+from fastapi import FastAPI
+from fastapi import HTTPException
+
 from pydantic import BaseModel
 
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_huggingface import (
+    HuggingFaceEmbeddings
+)
+
+from langchain_community.vectorstores import (
+    FAISS
+)
 
 from llm import get_llm
+from hybrid_retriever import bm25_rerank
 
-# =====================================================
-# FASTAPI APP
-# =====================================================
 
 app = FastAPI(
     title="Department Knowledge Assistant",
-    description="RAG Chatbot API using FAISS + Groq",
-    version="1.0"
+    version="2.0"
 )
 
-# =====================================================
-# REQUEST MODEL
-# =====================================================
 
 class QuestionRequest(BaseModel):
     question: str
 
-# =====================================================
-# LOAD EMBEDDINGS ONCE
-# =====================================================
 
-print("Loading Embedding Model...")
+print("Loading Embeddings...")
 
 embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+    model_name="BAAI/bge-base-en-v1.5"
 )
 
-# =====================================================
-# LOAD FAISS VECTORSTORE ONCE
-# =====================================================
-
-print("Loading Vector Database...")
+print("Loading Vector Store...")
 
 vectorstore = FAISS.load_local(
     "vectorstore",
@@ -46,120 +41,78 @@ vectorstore = FAISS.load_local(
     allow_dangerous_deserialization=True
 )
 
-print("Vector Database Loaded Successfully")
+print("✅ Vector Store Loaded")
 
-# =====================================================
-# ROOT
-# =====================================================
 
 @app.get("/")
 def home():
+
     return {
         "status": "running",
-        "message": "Department Knowledge Assistant API"
+        "application":
+        "Department Knowledge Assistant"
     }
 
-# =====================================================
-# HEALTH
-# =====================================================
 
 @app.get("/health")
 def health():
+
     return {
         "status": "healthy"
     }
 
-# =====================================================
-# CHAT
-# =====================================================
 
 @app.post("/chat")
 def chat(request: QuestionRequest):
 
-    try:
+    question = request.question.strip()
 
-        question = request.question.strip()
+    if not question:
 
-        if not question:
-            raise HTTPException(
-                status_code=400,
-                detail="Question cannot be empty"
-            )
+        raise HTTPException(
+            status_code=400,
+            detail="Question cannot be empty"
+        )
 
-        print(f"Question Received: {question}")
-
-        # ===========================================
-        # RETRIEVE RELEVANT DOCUMENTS
-        # ===========================================
-
-        results = vectorstore.similarity_search_with_score(
+    results = (
+        vectorstore
+        .similarity_search_with_score(
             question,
-            k=4
+            k=20
         )
+    )
 
-        if not results:
-            return {
-                "question": question,
-                "answer": "Information not found in documents.",
-                "sources": []
-            }
+    docs = [
+        doc
+        for doc, score in results
+    ]
 
-        docs = [doc for doc, score in results]
+    docs = bm25_rerank(
+        question,
+        docs,
+        top_k=8
+    )
 
-        # ===========================================
-        # BUILD CONTEXT
-        # ===========================================
+    if not docs:
 
-        context = ""
+        return {
+            "question": question,
+            "answer":
+            "Information not found in documents."
+        }
 
-        for doc in docs:
+    context = "\n\n".join(
+        [
+            doc.page_content
+            for doc in docs
+        ]
+    )
 
-            source = doc.metadata.get(
-                "source",
-                "Unknown"
-            )
+    prompt = f"""
+Answer ONLY from the supplied context.
 
-            page = doc.metadata.get(
-                "page",
-                "N/A"
-            )
+If answer does not exist reply exactly:
 
-            context += f"""
-SOURCE DOCUMENT: {source}
-
-PAGE NUMBER: {page}
-
-{doc.page_content}
-
-=================================================
-"""
-
-        # ===========================================
-        # TOP DOCUMENT
-        # ===========================================
-
-        top_doc = docs[0]
-
-        primary_source = top_doc.metadata.get(
-            "source",
-            "Unknown"
-        )
-
-        primary_page = top_doc.metadata.get(
-            "page",
-            "N/A"
-        )
-
-        # ===========================================
-        # PROMPT
-        # ===========================================
-
-        prompt = f"""
-You are a Tata Motors Department Knowledge Assistant.
-
-Use ONLY the context below.
-
-If answer is unavailable, say:
 Information not found in documents.
 
 CONTEXT:
@@ -171,68 +124,37 @@ QUESTION:
 {question}
 """
 
-        # ===========================================
-        # LLM RESPONSE
-        # ===========================================
+    llm = get_llm()
 
-        llm = get_llm()
+    answer = llm.invoke(
+        prompt
+    )
 
-        answer = llm.invoke(prompt)
+    source_pages = defaultdict(set)
 
-        # ===========================================
-        # SOURCES
-        # ===========================================
+    for doc in docs:
 
-        source_pages = defaultdict(set)
-
-        for doc in docs:
-
-            source = doc.metadata.get(
-                "source",
-                "Unknown"
-            )
-
-            page = doc.metadata.get(
-                "page",
-                "N/A"
-            )
-
-            source_pages[source].add(page)
-
-        retrieved_sources = []
-
-        for source, pages in source_pages.items():
-
-            retrieved_sources.append(
-                {
-                    "source": source,
-                    "pages": sorted(list(pages))
-                }
-            )
-
-        # ===========================================
-        # RESPONSE
-        # ===========================================
-
-        return {
-            "question": question,
-            "answer": answer,
-            "primary_source": primary_source,
-            "primary_page": primary_page,
-            "retrieved_chunks": len(docs),
-            "retrieved_sources": retrieved_sources
-        }
-
-    except Exception as e:
-
-        import traceback
-
-        print("===================================")
-        print("CHAT ERROR")
-        print(traceback.format_exc())
-        print("===================================")
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
+        source = doc.metadata.get(
+            "source",
+            "Unknown"
         )
+
+        page = doc.metadata.get(
+            "page",
+            "N/A"
+        )
+
+        source_pages[source].add(page)
+
+    return {
+        "question": question,
+        "answer": answer,
+        "sources": [
+            {
+                "source": source,
+                "pages": sorted(list(pages))
+            }
+            for source, pages
+            in source_pages.items()
+        ]
+    }

@@ -1,11 +1,20 @@
-import streamlit as st
-from collections import defaultdict
 import re
 
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+import streamlit as st
+
+from collections import defaultdict
+
+from langchain_huggingface import (
+    HuggingFaceEmbeddings
+)
+
+from langchain_community.vectorstores import (
+    FAISS
+)
 
 from llm import get_llm
+from hybrid_retriever import bm25_rerank
+
 
 st.set_page_config(
     page_title="Department Knowledge Assistant",
@@ -13,23 +22,23 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🤖 Department Knowledge Assistant")
+st.title(
+    "🤖 Department Knowledge Assistant"
+)
 
 
 @st.cache_resource
 def load_vectorstore():
 
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+        model_name="BAAI/bge-base-en-v1.5"
     )
 
-    db = FAISS.load_local(
+    return FAISS.load_local(
         "vectorstore",
         embeddings,
         allow_dangerous_deserialization=True
     )
-
-    return db
 
 
 try:
@@ -59,49 +68,26 @@ if question:
         "Searching Knowledge Base..."
     ):
 
-        results = vectorstore.similarity_search_with_score(
-            question,
-            k=4
+        results = (
+            vectorstore
+            .similarity_search_with_score(
+                question,
+                k=20
+            )
         )
 
-    docs = [doc for doc, score in results]
+    docs = [
+        doc
+        for doc, score in results
+    ]
 
-    # ==========================
-    # DEBUG SECTION (HIDDEN)
-    # ==========================
-
-    with st.expander("⚙️ Debug Information", expanded=False):
-
-        st.write(
-            f"Retrieved Chunks: {len(docs)}"
-        )
-
-        with st.expander("Retrieved Chunks"):
-
-            for i, (doc, score) in enumerate(results):
-
-                st.markdown(
-                    f"### Chunk {i+1}"
-                )
-
-                st.write(
-                    f"Score: {round(score,4)}"
-                )
-
-                st.write(
-                    f"Source: {doc.metadata.get('source')}"
-                )
-
-                st.write(
-                    f"Page: {doc.metadata.get('page')}"
-                )
-
-                st.write(doc.page_content)
-
-                st.divider()
+    docs = bm25_rerank(
+        question,
+        docs,
+        top_k=8
+    )
 
     context_parts = []
-
     seen = set()
 
     for doc in docs:
@@ -132,22 +118,16 @@ PAGE: {page}
 """
         )
 
-    context = "\n\n".join(context_parts)
+    context = "\n\n".join(
+        context_parts
+    )
 
     prompt = f"""
-You are a Tata Motors Department Knowledge Assistant.
+Answer ONLY using the supplied context.
 
-Answer only from the provided context.
+Provide concise and accurate answers.
 
-Give a concise and direct answer.
-
-DO NOT mention:
-- Source file names
-- PDF names
-- Page numbers
-- References
-
-If information is not available, reply exactly:
+If answer is unavailable reply exactly:
 
 Information not found in documents.
 
@@ -164,11 +144,12 @@ QUESTION:
 
         llm = get_llm()
 
-        answer = llm.invoke(prompt)
+        answer = llm.invoke(
+            prompt
+        )
 
-        # Remove any source references if LLM still adds them
         answer = re.sub(
-            r"\(Source:.*?\)",
+            r"Source:.*",
             "",
             answer,
             flags=re.IGNORECASE
@@ -183,12 +164,6 @@ QUESTION:
         st.error(
             f"LLM Error: {e}"
         )
-
-        st.stop()
-
-    # ==========================
-    # SOURCES DROPDOWN
-    # ==========================
 
     source_pages = defaultdict(set)
 
@@ -207,12 +182,36 @@ QUESTION:
         source_pages[source].add(page)
 
     with st.expander(
-        "📚 Retrieved Sources (Click to Expand)",
-        expanded=False
+        "📚 Retrieved Sources"
     ):
 
         for source, pages in source_pages.items():
 
             st.write(
                 f"📄 {source} | Pages: {sorted(list(pages))}"
+            )
+
+    with st.expander(
+        "⚙️ Debug Information"
+    ):
+
+        st.write(
+            f"Retrieved Chunks: {len(docs)}"
+        )
+
+        for i, doc in enumerate(
+            docs,
+            start=1
+        ):
+
+            st.markdown(
+                f"### Chunk {i}"
+            )
+
+            st.write(
+                doc.metadata
+            )
+
+            st.write(
+                doc.page_content[:1000]
             )
