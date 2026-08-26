@@ -7,11 +7,11 @@ from llm import get_llm
 
 st.set_page_config(
     page_title="Department Knowledge Assistant",
-    page_icon="🤖",
+    page_icon="🚛",
     layout="wide"
 )
 
-st.title("🤖 Department Knowledge Assistant")
+st.title("🚛 Department Knowledge Assistant")
 
 embeddings = HuggingFaceEmbeddings(
     model_name="BAAI/bge-base-en-v1.5"

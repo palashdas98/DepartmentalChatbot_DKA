@@ -1,31 +1,34 @@
 import re
-
 import streamlit as st
 
 from collections import defaultdict
 
-from langchain_huggingface import (
-    HuggingFaceEmbeddings
-)
-
-from langchain_community.vectorstores import (
-    FAISS
-)
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 
 from llm import get_llm
 from hybrid_retriever import bm25_rerank
 
 
+# -------------------------------------------------
+# STREAMLIT CONFIG
+# -------------------------------------------------
+
 st.set_page_config(
     page_title="Department Knowledge Assistant",
-    page_icon="🤖",
+    page_icon="🚛",
     layout="wide"
 )
 
-st.title(
-    "🤖 Department Knowledge Assistant"
+st.title("Department Knowledge Assistant")
+st.caption(
+    "AI-powered document retrieval and question answering system"
 )
 
+
+# -------------------------------------------------
+# LOAD VECTOR DATABASE
+# -------------------------------------------------
 
 @st.cache_resource
 def load_vectorstore():
@@ -58,9 +61,18 @@ except Exception as e:
     st.stop()
 
 
+# -------------------------------------------------
+# USER QUESTION
+# -------------------------------------------------
+
 question = st.text_input(
     "Ask a question from your PDFs"
 )
+
+
+# -------------------------------------------------
+# MAIN EXECUTION
+# -------------------------------------------------
 
 if question:
 
@@ -69,10 +81,9 @@ if question:
     ):
 
         results = (
-            vectorstore
-            .similarity_search_with_score(
+            vectorstore.similarity_search_with_score(
                 question,
-                k=20
+                k=50
             )
         )
 
@@ -84,8 +95,12 @@ if question:
     docs = bm25_rerank(
         question,
         docs,
-        top_k=8
+        top_k=20
     )
+
+    # ---------------------------------------------
+    # REMOVE DUPLICATE CHUNKS
+    # ---------------------------------------------
 
     context_parts = []
     seen = set()
@@ -122,14 +137,130 @@ PAGE: {page}
         context_parts
     )
 
+    # ---------------------------------------------
+    # PERFORMANCE QUERY DETECTION
+    # ---------------------------------------------
+
+    performance_keywords = [
+        "performance",
+        "performance summary",
+        "vehicle performance",
+        "acceleration",
+        "wot",
+        "wide open throttle",
+        "driveability",
+        "drivability",
+        "gradeability",
+        "restart gradeability",
+        "bat tub",
+        "bathtub"
+    ]
+
+    is_performance_query = any(
+        keyword in question.lower()
+        for keyword in performance_keywords
+    )
+
+    # ---------------------------------------------
+    # PROMPT
+    # ---------------------------------------------
+
     prompt = f"""
-Answer ONLY using the supplied context.
+You are Tata Motors Department Knowledge Assistant.
 
-Provide concise and accurate answers.
+Instructions:
 
-If answer is unavailable reply exactly:
+1. Use ONLY the supplied context.
+
+2. Never use outside knowledge.
+
+3. Provide professional engineering answers.
+
+4. Never show:
+   - PDF names
+   - file names
+   - source names
+   - page numbers
+   - citations
+   - chunk ids
+
+5. Never generate HTML tags.
+
+6. Never use:
+   - km/h·s⁻¹
+   - km/h/s
+   - km/h-sec
+
+Always write:
+Kmph/Sec
+
+7. If information is unavailable reply exactly:
 
 Information not found in documents.
+
+8. Answer ONLY from supplied context.
+
+9. Present numerical information in clean markdown tables whenever possible.
+
+10. Do not invent values.
+
+"""
+
+    if is_performance_query:
+
+        prompt += """
+
+IMPORTANT:
+
+User is asking vehicle performance information.
+
+You MUST extract ALL available performance information present in context.
+
+Always provide these sections separately:
+
+### Acceleration
+
+### Wide Open Throttle (WOT) Drivability
+
+### Bat-Tub Driveability & Sustain
+
+### Restart Gradeability
+
+Rules:
+
+1. Use markdown tables only.
+
+2. Never use bullet points.
+
+3. Never skip an available section.
+
+4. If a section is not available write:
+
+Information not found in documents.
+
+5. For WOT Drivability use format:
+
+| Gear | Acceleration (Kmph/Sec) |
+|------|------|
+
+6. For Acceleration use format:
+
+| Parameter | Value |
+
+7. For Bat-Tub Driveability & Sustain use format:
+
+| Parameter | Value |
+
+8. For Restart Gradeability use format:
+
+| Parameter | Value |
+
+9. Compare vehicles only if comparison data exists.
+
+10. Show every numerical value found in context.
+"""
+
+    prompt += f"""
 
 CONTEXT:
 
@@ -148,22 +279,92 @@ QUESTION:
             prompt
         )
 
+        # -----------------------------------------
+        # CLEANING
+        # -----------------------------------------
+
         answer = re.sub(
-            r"Source:.*",
+            r"<strong.*?>",
             "",
             answer,
             flags=re.IGNORECASE
-        ).strip()
+        )
+
+        answer = re.sub(
+            r"</strong>",
+            "",
+            answer,
+            flags=re.IGNORECASE
+        )
+
+        answer = re.sub(
+            r"<[^>]+>",
+            "",
+            answer
+        )
+
+        answer = re.sub(
+            r"&lt;br\s*/?&gt;",
+            "\n",
+            answer,
+            flags=re.IGNORECASE
+        )
+
+        answer = re.sub(
+            r"km/h·s⁻¹",
+            "Kmph/Sec",
+            answer,
+            flags=re.IGNORECASE
+        )
+
+        answer = re.sub(
+            r"km/h/s",
+            "Kmph/Sec",
+            answer,
+            flags=re.IGNORECASE
+        )
+
+        answer = re.sub(
+            r"km/h-sec",
+            "Kmph/Sec",
+            answer,
+            flags=re.IGNORECASE
+        )
+
+        answer = re.sub(
+            r"source\s*page\s*\d+",
+            "",
+            answer,
+            flags=re.IGNORECASE
+        )
+
+        answer = re.sub(
+            r"\n{3,}",
+            "\n\n",
+            answer
+        )
+
+        answer = answer.strip()
+
+        # -----------------------------------------
+        # DISPLAY ANSWER
+        # -----------------------------------------
 
         st.subheader("Answer")
 
-        st.success(answer)
+        st.markdown(
+            answer
+        )
 
     except Exception as e:
 
         st.error(
             f"LLM Error: {e}"
         )
+
+    # ---------------------------------------------
+    # SOURCE DISPLAY
+    # ---------------------------------------------
 
     source_pages = defaultdict(set)
 
@@ -191,27 +392,26 @@ QUESTION:
                 f"📄 {source} | Pages: {sorted(list(pages))}"
             )
 
-    with st.expander(
-        "⚙️ Debug Information"
-    ):
+    # ---------------------------------------------
+    # DEBUG (OPTIONAL)
+    # ---------------------------------------------
 
-        st.write(
-            f"Retrieved Chunks: {len(docs)}"
-        )
-
-        for i, doc in enumerate(
-            docs,
-            start=1
-        ):
-
-            st.markdown(
-                f"### Chunk {i}"
-            )
-
-            st.write(
-                doc.metadata
-            )
-
-            st.write(
-                doc.page_content[:1000]
-            )
+    # with st.expander("⚙️ Debug Information"):
+    #
+    #     st.write(
+    #         f"Retrieved Chunks: {len(docs)}"
+    #     )
+    #
+    #     for i, doc in enumerate(docs, start=1):
+    #
+    #         st.markdown(
+    #             f"### Chunk {i}"
+    #         )
+    #
+    #         st.write(
+    #             doc.metadata
+    #         )
+    #
+    #         st.write(
+    #             doc.page_content[:1000]
+    #         )
