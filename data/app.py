@@ -1,17 +1,20 @@
 import streamlit as st
 
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 
+from llm import get_llm
+
 st.set_page_config(
-    page_title="Department RAG Chatbot",
-    page_icon="🤖"
+    page_title="Department Knowledge Assistant",
+    page_icon="🤖",
+    layout="wide"
 )
 
-st.title("🤖 Department RAG Chatbot")
+st.title("🤖 Department Knowledge Assistant")
 
 embeddings = HuggingFaceEmbeddings(
-    model_name="all-MiniLM-L6-v2"
+    model_name="BAAI/bge-base-en-v1.5"
 )
 
 vectordb = Chroma(
@@ -19,28 +22,43 @@ vectordb = Chroma(
     embedding_function=embeddings
 )
 
+st.success("✅ Vector Database Loaded Successfully")
+
 question = st.text_input(
-    "Ask a question from your PDF"
+    "Ask a question from your PDFs"
 )
 
 if question:
 
     docs = vectordb.similarity_search(
         question,
-        k=3
+        k=15
+    )
+
+    context = "\n\n".join(
+        [doc.page_content for doc in docs]
+    )
+
+    llm = get_llm()
+
+    answer = llm.invoke(
+        context=context,
+        question=question
     )
 
     st.subheader("Answer")
 
-    if len(docs) > 0:
-        answer = docs[0].page_content
-        st.success(answer)
+    st.success(answer)
 
-        st.subheader("Source Chunks")
+    with st.expander("Retrieved Sources"):
 
         for i, doc in enumerate(docs, start=1):
-            st.write(f"Chunk {i}")
-            st.info(doc.page_content)
 
-    else:
-        st.error("No answer found.")
+            st.write(
+                f"Source: "
+                f"{doc.metadata.get('source')}"
+            )
+
+            st.info(
+                doc.page_content[:1000]
+            )
