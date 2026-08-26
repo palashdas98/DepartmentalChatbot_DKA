@@ -8,7 +8,9 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not found")
+    raise ValueError(
+        "GROQ_API_KEY not found in Environment Variables"
+    )
 
 client = Groq(
     api_key=GROQ_API_KEY
@@ -19,12 +21,10 @@ MODEL_NAME = "openai/gpt-oss-120b"
 
 class LLMWrapper:
 
-    def invoke(self, context, question):
+    def invoke(self, prompt):
 
-        prompt = f"""
-You are Tata Motors Department Knowledge Assistant.
+        try:
 
-<<<<<<< HEAD
             response = client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=[
@@ -42,24 +42,18 @@ Rules:
 5. Give concise and direct answers.
 6. If information is not available, reply exactly:
 
-=======
-Instructions:
-1. Use only the provided context.
-2. Never create information.
-3. If answer exists, provide exact values.
-4. Mention source document.
-5. If information is absent, say:
->>>>>>> 5943ed513b498b440d438f7a2c7498d1333299cd
 Information not found in documents.
-
-CONTEXT:
-{context}
-
-QUESTION:
-{question}
 """
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0,
+                max_tokens=1000
+            )
 
-<<<<<<< HEAD
             return (
                 response
                 .choices[0]
@@ -67,22 +61,9 @@ QUESTION:
                 .content
                 .strip()
             )
-=======
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0
-        )
->>>>>>> 5943ed513b498b440d438f7a2c7498d1333299cd
 
-        return response.choices[0].message.content
+        except Exception as e:
 
-<<<<<<< HEAD
             print("\n========== GROQ ERROR ==========")
             print(str(e))
             print("================================\n")
@@ -91,8 +72,6 @@ QUESTION:
                 f"Groq API Error: {str(e)}"
             )
 
-=======
->>>>>>> 5943ed513b498b440d438f7a2c7498d1333299cd
 
 def get_llm():
     return LLMWrapper()
