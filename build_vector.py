@@ -3,23 +3,21 @@ import os
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
 
 all_docs = []
 
 pdf_folder = "pdfs"
 
-print("\nLoading PDFs...\n")
+print("Loading PDFs...")
 
 for file in os.listdir(pdf_folder):
 
-    if file.lower().endswith(".pdf"):
+    if file.endswith(".pdf"):
 
-        print(f"Loading PDF: {file}")
+        filepath = os.path.join(pdf_folder, file)
 
-        path = os.path.join(pdf_folder, file)
-
-        loader = PyPDFLoader(path)
+        loader = PyPDFLoader(filepath)
 
         docs = loader.load()
 
@@ -28,26 +26,25 @@ for file in os.listdir(pdf_folder):
 
         all_docs.extend(docs)
 
-print(f"\nDocuments Loaded: {len(all_docs)}")
+print("Documents Loaded:", len(all_docs))
 
 splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=100
+    chunk_size=1500,
+    chunk_overlap=300
 )
 
 chunks = splitter.split_documents(all_docs)
 
-print(f"Chunks Created: {len(chunks)}")
+print("Chunks Created:", len(chunks))
 
 embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+    model_name="BAAI/bge-base-en-v1.5"
 )
 
-db = FAISS.from_documents(
-    chunks,
-    embeddings
+vectordb = Chroma.from_documents(
+    documents=chunks,
+    embedding=embeddings,
+    persist_directory="db"
 )
 
-db.save_local("vectorstore")
-
-print("\nVectorstore Created Successfully")
+print("Vector Database Created Successfully")

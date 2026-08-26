@@ -3,77 +3,53 @@ import os
 from groq import Groq
 from dotenv import load_dotenv
 
-# ======================================================
-# LOAD ENV
-# ======================================================
-
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not GROQ_API_KEY:
-    raise ValueError(
-        "GROQ_API_KEY not found in Environment Variables"
-    )
+    raise ValueError("GROQ_API_KEY not found")
 
-# ======================================================
-# CREATE CLIENT ONCE
-# ======================================================
+client = Groq(api_key=GROQ_API_KEY)
 
-client = Groq(
-    api_key=GROQ_API_KEY
-)
+MODEL_NAME = "openai/gpt-oss-120b"
 
-# ======================================================
-# LLM WRAPPER
-# ======================================================
 
 class LLMWrapper:
 
-    def invoke(self, prompt):
+    def invoke(self, context, question):
 
-        try:
+        prompt = f"""
+You are Tata Motors Department Knowledge Assistant.
 
-            response = client.chat.completions.create(
-                model="openai/gpt-oss-120b",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": """
-You are a Tata Motors Department Knowledge Assistant.
-
-Rules:
-1. Use only provided context.
-2. Never hallucinate.
-3. Mention values exactly.
-4. Mention source document if available.
-5. If answer not found say:
+Instructions:
+1. Use only the provided context.
+2. Never create information.
+3. If answer exists, provide exact values.
+4. Mention source document.
+5. If information is absent, say:
 Information not found in documents.
+
+CONTEXT:
+{context}
+
+QUESTION:
+{question}
 """
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0,
-                max_tokens=1000
-            )
 
-            return response.choices[0].message.content
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0
+        )
 
-        except Exception as e:
+        return response.choices[0].message.content
 
-            print("GROQ ERROR:")
-            print(str(e))
-
-            raise Exception(
-                f"Groq API Error: {str(e)}"
-            )
-
-# ======================================================
-# GET MODEL
-# ======================================================
 
 def get_llm():
     return LLMWrapper()

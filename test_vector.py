@@ -15,7 +15,7 @@ query = "40 kmph"
 
 results = db.similarity_search(
     query,
-    k=5
+    k=10
 )
 
 print(f"Documents Found: {len(results)}")
