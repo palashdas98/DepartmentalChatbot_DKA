@@ -1,414 +1,333 @@
 import re
 import streamlit as st
-
 from collections import defaultdict
-
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-
 from llm import get_llm
 from hybrid_retriever import bm25_rerank
 
-
-# -------------------------------------------------
+# =====================================================
 # STREAMLIT CONFIG
-# -------------------------------------------------
-
+# =====================================================
 st.set_page_config(
     page_title="Department Knowledge Assistant",
     page_icon="🚛",
     layout="wide"
 )
-
 st.title("Department Knowledge Assistant")
 st.caption(
     "AI-powered document retrieval and question answering system"
 )
 
-
-# -------------------------------------------------
-# LOAD VECTOR DATABASE
-# -------------------------------------------------
-
+# =====================================================
+# LOAD VECTORSTORE
+# =====================================================
 @st.cache_resource
 def load_vectorstore():
-
     embeddings = HuggingFaceEmbeddings(
         model_name="BAAI/bge-base-en-v1.5"
     )
-
-    return FAISS.load_local(
+    db = FAISS.load_local(
         "vectorstore",
         embeddings,
         allow_dangerous_deserialization=True
     )
-
+    return db
 
 try:
-
     vectorstore = load_vectorstore()
-
     st.success(
         "✅ Vector Database Loaded Successfully"
     )
-
 except Exception as e:
-
     st.error(
         f"Vector Database Load Error: {e}"
     )
-
     st.stop()
 
-
-# -------------------------------------------------
-# USER QUESTION
-# -------------------------------------------------
-
+# =====================================================
+# USER INPUT
+# =====================================================
 question = st.text_input(
     "Ask a question from your PDFs"
 )
-
-
-# -------------------------------------------------
-# MAIN EXECUTION
-# -------------------------------------------------
-
 if question:
-
+    # =================================================
+    # QUERY EXPANSION
+    # =================================================
+    search_query = question
+    lower_question = question.lower()
+    if (
+        "fuel economy" in lower_question
+        or "fe" in lower_question
+        or "mileage" in lower_question
+    ):
+        search_query += """
+        fuel economy
+        mileage
+        FE
+        kmpl
+        km/l
+        fuel consumption
+        """
+    elif (
+        "acceleration" in lower_question
+    ):
+        search_query += """
+        acceleration
+        0-60 kmph
+        0-1000 m
+        WOT
+        driveability
+        """
+    elif (
+        "performance" in lower_question
+    ):
+        search_query += """
+        acceleration
+        fuel economy
+        WOT
+        driveability
+        restart gradeability
+        """
+    # =================================================
+    # RETRIEVAL
+    # =================================================
     with st.spinner(
         "Searching Knowledge Base..."
     ):
-
         results = (
             vectorstore.similarity_search_with_score(
-                question,
-                k=15
+                search_query,
+                k=20
             )
         )
-
     docs = [
         doc
         for doc, score in results
     ]
-
     docs = bm25_rerank(
-        question,
+        search_query,
         docs,
-        top_k=10
+        top_k=5
     )
-
-    # ---------------------------------------------
-    # REMOVE DUPLICATE CHUNKS
-    # ---------------------------------------------
-
+    # =================================================
+    # CONTEXT BUILDING
+    # =================================================
     context_parts = []
     seen = set()
-
     for doc in docs:
-
         chunk = doc.page_content.strip()
-
         if chunk in seen:
             continue
-
         seen.add(chunk)
-
         source = doc.metadata.get(
             "source",
             "Unknown"
         )
-
         page = doc.metadata.get(
             "page",
             "N/A"
         )
-
         context_parts.append(
-            f"""
-SOURCE: {source}
+            f"""DOCUMENT: {source}
 PAGE: {page}
-
-{chunk}
-"""
+{chunk[:1200]}"""
         )
-
     context = "\n\n".join(
         context_parts
     )
-
-    # ---------------------------------------------
-    # PERFORMANCE QUERY DETECTION
-    # ---------------------------------------------
-
-    performance_keywords = [
-        "performance",
-        "performance summary",
-        "vehicle performance",
-        "acceleration",
-        "wot",
-        "wide open throttle",
-        "driveability",
-        "drivability",
-        "gradeability",
-        "restart gradeability",
-        "bath Tub",
-        "bathtub"
-    ]
-
-    is_performance_query = any(
-        keyword in question.lower()
-        for keyword in performance_keywords
-    )
-
-    # ---------------------------------------------
+    # Protection from Groq token limits
+    context = context[:6000]
+    # =================================================
     # PROMPT
-    # ---------------------------------------------
-
-    prompt = f"""
-You are Tata Motors Department Knowledge Assistant.
-
-Instructions:
-
-1. Use the supplied context to answer the question.
-
-2. If relevant information exists in the context, summarize it clearly.
-
-3. Provide professional engineering answers.
-
-4. Never show:
+    # =================================================
+    prompt = f"""You are Tata Motors Department Knowledge Assistant.
+Rules:
+1. Use ONLY the context supplied.
+2. Extract ALL numerical values if available.
+3. If information exists in tables, include the values.
+4. For Fuel Economy questions, provide FE, mileage, kmpl, fuel consumption values.
+5. For Performance questions, provide:
+   - 0-60 kmph
+   - 0-1000 m
+   - WOT Driveability
+   - Restart Gradeability
+   - Acceleration
+   - Sustainability
+6. If gear-wise acceleration is present, format clearly:
+   • 1st Gear : value
+   • 2nd Gear : value
+   • 3rd Gear : value
+   • 4th Gear : value
+   • 5th Gear : value
+   • 6th Gear : value
+7. FORMATTING (very important):
+   - Whenever the answer contains values that vary by condition
+     (e.g. AC ON/OFF, different speeds, different gears, different
+     test runs), present them as a proper Markdown table with a
+     header row, using this exact style:
+     | Condition | 40 km/h | 55 km/h |
+     |-----------|---------|---------|
+     | AC OFF    | 3.60 kmpl | 3.40 kmpl |
+     | AC ON     | 3.47 kmpl | 3.27 kmpl |
+   - Always put a blank line before and after every table.
+   - Use bullet points (not tables) for single, non-comparative
+     values.
+   - Keep normal sentence spacing; do not merge lines together.
+8. Do NOT show:
    - PDF names
-   - file names
    - source names
    - page numbers
    - citations
-   - chunk ids
-
-5. Never generate HTML tags.
-
-6. Never use:
-   - km/h·s⁻¹
-   - km/h/s
-   - km/h-sec
-   - km h⁻¹ s⁻¹
-
-7. If exact value is unavailable but related performance information exists, provide it.
-
-8. Only reply: Information not found in documents. when no relevant information exists.
-
-9. Present numerical information in clean markdown tables whenever possible.
-
-"""
-
-    if is_performance_query:
-
-        prompt += """
-
-IMPORTANT:
-
-User is asking vehicle performance information.
-
-You MUST extract ALL available performance information present in context.
-
-Provide these sections separately with clear headings:
-
-### Acceleration
-
-### Wide Open Throttle (WOT) Drivability
-
-### Bat-Tub Driveability 
-
-### Sustain & Restart Gradeability
-
-Rules:
-
-1. Never use bullet points.
-
-2. Never skip an available section.
-
-3. If a section is not available write:
-
+9. Give concise engineering answers.
+10. Reply with:
 Information not found in documents.
-
-4. For WOT Drivability use format:
-
-| Gear | Acceleration (Kmph/Sec) |
-|------|------|
-
-5. For Acceleration use format:
-
-| Parameter | Value |
-
-6. For Bat-Tub Driveability use format:
-
-| Parameter | Value |
-
-7. For Sustain & Restart Gradeability use format:
-
-| Parameter | Value |
-
-8. Compare vehicles only if comparison data exists.
-
-9. Show every numerical value found in context.
-"""
-
-    prompt += f"""
-
+Only if no relevant information exists.
 CONTEXT:
-
 {context}
-
 QUESTION:
-
-{question}
-"""
-
+{question}"""
+    # =================================================
+    # LLM
+    # =================================================
     try:
-
         llm = get_llm()
-
         answer = llm.invoke(
             prompt
         )
-        if not answer or not answer.strip():
+        if (
+            not answer
+            or not answer.strip()
+        ):
             answer = (
-                "Relevant documents were retrieved, "
-                "but no answer was generated. "
-                "Please refine the question."
+                "Relevant documents were retrieved "
+                "but no answer could be generated."
             )
-        # -----------------------------------------
-        # CLEANING
-        # -----------------------------------------
-
+        # =============================================
+        # CLEANUP
+        # =============================================
         answer = re.sub(
-            r"<strong.*?>",
-            "",
-            answer,
-            flags=re.IGNORECASE
-        )
-
-        answer = re.sub(
-            r"</strong>",
-            "",
-            answer,
-            flags=re.IGNORECASE
-        )
-
-        answer = re.sub(
-            r"<[^>]+>",
+            r"\[.*?\]",
             "",
             answer
         )
-
-        answer = re.sub(
-            r"&lt;br\s*/?&gt;",
-            "\n",
-            answer,
-            flags=re.IGNORECASE
-        )
-
-        answer = re.sub(
-            r"km/h·s⁻¹",
-            "Kmph/Sec",
-            answer,
-            flags=re.IGNORECASE
-        )
-
-        answer = re.sub(
-            r"km/h/s",
-            "Kmph/Sec",
-            answer,
-            flags=re.IGNORECASE
-        )
-
-        answer = re.sub(
-            r"km/h-sec",
-            "Kmph/Sec",
-            answer,
-            flags=re.IGNORECASE
-        )
-
         answer = re.sub(
             r"source\s*page\s*\d+",
             "",
             answer,
             flags=re.IGNORECASE
         )
-
+        answer = re.sub(
+            r"<br\s*/?>",
+            "\n",
+            answer,
+            flags=re.IGNORECASE
+        )
+        answer = re.sub(
+            r"<[^>]+>",
+            "",
+            answer
+        )
+        answer = answer.replace(
+            "1st gear:",
+            "\n• 1st Gear : "
+        )
+        answer = answer.replace(
+            "2nd gear:",
+            "\n• 2nd Gear : "
+        )
+        answer = answer.replace(
+            "3rd gear:",
+            "\n• 3rd Gear : "
+        )
+        answer = answer.replace(
+            "4th gear:",
+            "\n• 4th Gear : "
+        )
+        answer = answer.replace(
+            "5th gear:",
+            "\n• 5th Gear : "
+        )
+        answer = answer.replace(
+            "6th gear:",
+            "\n• 6th Gear : "
+        )
+        answer = answer.replace(
+            "km/h/s",
+            "Kmph/Sec"
+        )
+        answer = answer.replace(
+            "km/h·s⁻¹",
+            "Kmph/Sec"
+        )
+        # NOTE: only collapse repeated SPACES/TABS, never newlines.
+        # The old r"\s{2,}" pattern also matched newlines, which
+        # squashed multi-line Markdown tables into one line and
+        # broke their formatting.
+        answer = re.sub(
+            r"[ \t]{2,}",
+            " ",
+            answer
+        )
+        # Collapse 3+ blank lines down to a single blank line,
+        # but keep the blank lines tables need to render.
         answer = re.sub(
             r"\n{3,}",
             "\n\n",
             answer
         )
-
         answer = answer.strip()
-
-        # -----------------------------------------
-        # DISPLAY ANSWER
-        # -----------------------------------------
-
+        # =============================================
+        # ANSWER DISPLAY
+        # =============================================
         st.subheader("Answer")
-
-        st.markdown(
-            answer
-        )
-
+        st.markdown(answer)
     except Exception as e:
-
         st.error(
             f"LLM Error: {e}"
         )
-
-    # ---------------------------------------------
+    # =================================================
     # SOURCE DISPLAY
-    # ---------------------------------------------
-
+    # =================================================
     source_pages = defaultdict(set)
-
     for doc in docs:
-
         source = doc.metadata.get(
             "source",
             "Unknown"
         )
-
         page = doc.metadata.get(
             "page",
             "N/A"
         )
-
         source_pages[source].add(page)
-
     with st.expander(
         "📚 Retrieved Sources"
     ):
-
         for source, pages in source_pages.items():
-
             st.write(
                 f"📄 {source} | Pages: {sorted(list(pages))}"
             )
-
-    # ---------------------------------------------
-    # DEBUG (OPTIONAL)
-    # ---------------------------------------------
-
-    # with st.expander("⚙️ Debug Information"):
-    #
-    #     st.write(
-    #         f"Retrieved Chunks: {len(docs)}"
-    #     )
-    #
-    #     for i, doc in enumerate(docs, start=1):
-    #
-    #         st.markdown(
-    #             f"### Chunk {i}"
-    #         )
-    #
-    #         st.write(
-    #             doc.metadata
-    #         )
-    #
-    #         st.write(
-    #             doc.page_content[:1000]
-    #         )
+    # =================================================
+    # DEBUG
+    # =================================================
+    with st.expander(
+        "⚙️ Debug Information",
+        expanded=False
+    ):
+        st.write(
+            f"Retrieved Chunks: {len(docs)}"
+        )
+        for i, doc in enumerate(
+            docs,
+            start=1
+        ):
+            st.markdown(
+                f"### Chunk {i}"
+            )
+            st.write(
+                doc.metadata
+            )
+            st.write(
+                doc.page_content[:1200]
+            )

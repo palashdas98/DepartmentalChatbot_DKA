@@ -16,7 +16,7 @@ client = Groq(
     api_key=GROQ_API_KEY
 )
 
-MODEL_NAME = "openai/gpt-oss-120b"
+MODEL_NAME = "openai/gpt-oss-20b"
 
 
 class LLMWrapper:
