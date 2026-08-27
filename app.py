@@ -83,7 +83,7 @@ if question:
         results = (
             vectorstore.similarity_search_with_score(
                 question,
-                k=50
+                k=15
             )
         )
 
@@ -95,7 +95,7 @@ if question:
     docs = bm25_rerank(
         question,
         docs,
-        top_k=20
+        top_k=10
     )
 
     # ---------------------------------------------
@@ -152,7 +152,7 @@ PAGE: {page}
         "drivability",
         "gradeability",
         "restart gradeability",
-        "bat tub",
+        "bath Tub",
         "bathtub"
     ]
 
@@ -170,9 +170,9 @@ You are Tata Motors Department Knowledge Assistant.
 
 Instructions:
 
-1. Use ONLY the supplied context.
+1. Use the supplied context to answer the question.
 
-2. Never use outside knowledge.
+2. If relevant information exists in the context, summarize it clearly.
 
 3. Provide professional engineering answers.
 
@@ -190,19 +190,13 @@ Instructions:
    - km/h·s⁻¹
    - km/h/s
    - km/h-sec
+   - km h⁻¹ s⁻¹
 
-Always write:
-Kmph/Sec
+7. If exact value is unavailable but related performance information exists, provide it.
 
-7. If information is unavailable reply exactly:
-
-Information not found in documents.
-
-8. Answer ONLY from supplied context.
+8. Only reply: Information not found in documents. when no relevant information exists.
 
 9. Present numerical information in clean markdown tables whenever possible.
-
-10. Do not invent values.
 
 """
 
@@ -216,48 +210,46 @@ User is asking vehicle performance information.
 
 You MUST extract ALL available performance information present in context.
 
-Always provide these sections separately:
+Provide these sections separately with clear headings:
 
 ### Acceleration
 
 ### Wide Open Throttle (WOT) Drivability
 
-### Bat-Tub Driveability & Sustain
+### Bat-Tub Driveability 
 
-### Restart Gradeability
+### Sustain & Restart Gradeability
 
 Rules:
 
-1. Use markdown tables only.
+1. Never use bullet points.
 
-2. Never use bullet points.
+2. Never skip an available section.
 
-3. Never skip an available section.
-
-4. If a section is not available write:
+3. If a section is not available write:
 
 Information not found in documents.
 
-5. For WOT Drivability use format:
+4. For WOT Drivability use format:
 
 | Gear | Acceleration (Kmph/Sec) |
 |------|------|
 
-6. For Acceleration use format:
+5. For Acceleration use format:
 
 | Parameter | Value |
 
-7. For Bat-Tub Driveability & Sustain use format:
+6. For Bat-Tub Driveability use format:
 
 | Parameter | Value |
 
-8. For Restart Gradeability use format:
+7. For Sustain & Restart Gradeability use format:
 
 | Parameter | Value |
 
-9. Compare vehicles only if comparison data exists.
+8. Compare vehicles only if comparison data exists.
 
-10. Show every numerical value found in context.
+9. Show every numerical value found in context.
 """
 
     prompt += f"""
@@ -278,7 +270,12 @@ QUESTION:
         answer = llm.invoke(
             prompt
         )
-
+        if not answer or not answer.strip():
+            answer = (
+                "Relevant documents were retrieved, "
+                "but no answer was generated. "
+                "Please refine the question."
+            )
         # -----------------------------------------
         # CLEANING
         # -----------------------------------------
