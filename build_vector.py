@@ -47,9 +47,14 @@ print(
     f"\nDocuments Loaded: {len(all_docs)}"
 )
 
+# Chunk size raised from 1500 -> 2200 (overlap raised to match)
+# so that a multi-row fuel-economy table (Unladen/Laden/Overall
+# x 40/55 kmph) is much less likely to get split mid-table across
+# two separate chunks. A split table means retrieval can pull in
+# only half the rows even when top_k is generous.
 splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1500,
-    chunk_overlap=300
+    chunk_size=2200,
+    chunk_overlap=400
 )
 
 chunks = splitter.split_documents(

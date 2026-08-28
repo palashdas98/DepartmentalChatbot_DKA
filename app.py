@@ -57,11 +57,12 @@ if question:
     # =================================================
     search_query = question
     lower_question = question.lower()
-    if (
+    is_fuel_economy_query = (
         "fuel economy" in lower_question
         or "fe" in lower_question
         or "mileage" in lower_question
-    ):
+    )
+    if is_fuel_economy_query:
         search_query += """
         fuel economy
         mileage
@@ -69,6 +70,11 @@ if question:
         kmpl
         km/l
         fuel consumption
+        laden
+        unladen
+        overall
+        40 kmph
+        55 kmph
         """
     elif (
         "acceleration" in lower_question
@@ -93,23 +99,28 @@ if question:
     # =================================================
     # RETRIEVAL
     # =================================================
+    # Fuel-economy tables often get split across more chunks than
+    # other topics, so widen both the initial FAISS candidate pool
+    # and the reranked top_k for those questions specifically.
+    search_k = 30 if is_fuel_economy_query else 20
     with st.spinner(
         "Searching Knowledge Base..."
     ):
         results = (
             vectorstore.similarity_search_with_score(
                 search_query,
-                k=20
+                k=search_k
             )
         )
     docs = [
         doc
         for doc, score in results
     ]
+    rerank_top_k = 8 if is_fuel_economy_query else 5
     docs = bm25_rerank(
         search_query,
         docs,
-        top_k=5
+        top_k=rerank_top_k
     )
     # =================================================
     # CONTEXT BUILDING
@@ -132,13 +143,16 @@ if question:
         context_parts.append(
             f"""DOCUMENT: {source}
 PAGE: {page}
-{chunk[:1200]}"""
+{chunk[:2200]}"""
         )
     context = "\n\n".join(
         context_parts
     )
     # Protection from Groq token limits
-    context = context[:6000]
+    # (raised to accommodate the larger per-chunk size above,
+    # so multiple full-size chunks still fit; lower this back
+    # down if you hit token-limit errors)
+    context = context[:14000]
     # =================================================
     # PROMPT
     # =================================================
@@ -147,7 +161,29 @@ Rules:
 1. Use ONLY the context supplied.
 2. Extract ALL numerical values if available.
 3. If information exists in tables, include the values.
-4. For Fuel Economy questions, provide FE, mileage, kmpl, fuel consumption values.
+4. For Fuel Economy questions:
+   - Report EVERY (condition, speed) data point that actually
+     appears in the context — e.g. Unladen/Laden/Overall at
+     40 kmph and/or 55 kmph — as its OWN table row. Do NOT force
+     the data into a fixed grid of all conditions × all speeds.
+   - If a particular condition/speed combination is not present
+     in the context, simply omit that row. NEVER invent a row,
+     and NEVER fill a missing value with "N/A" or leave a cell
+     blank — a row only exists if the value exists.
+   - Order the rows: Unladen first, then Laden, then Overall;
+     within each condition, 40 kmph before 55 kmph.
+   - Copy every numeric value EXACTLY as given in the context
+     (same digits, same decimal places, same unit). Do not round,
+     truncate, or shorten a value (e.g. "4.20 kmpl" must stay
+     "4.20 kmpl", never "4.2 km").
+   - Only if L/Ton/100km (load-corrected fuel consumption)
+     figures are present in the context, include them as their
+     own short table or bullet list below the main table. If
+     that data is not in the context, leave it out entirely —
+     do not mention it or say it's unavailable.
+   - Always write speed as "kmph" (e.g. "40 kmph", "55 kmph").
+     NEVER use "km/h", "km h⁻¹", "kmh⁻¹", or any superscript/
+     exponent notation for speed units.
 5. For Performance questions, provide:
    - 0-60 kmph
    - 0-1000 m
@@ -163,14 +199,21 @@ Rules:
    • 5th Gear : value
    • 6th Gear : value
 7. FORMATTING (very important):
-   - Whenever the answer contains values that vary by condition
-     (e.g. AC ON/OFF, different speeds, different gears, different
-     test runs), present them as a proper Markdown table with a
-     header row, using this exact style:
-     | Condition | 40 km/h | 55 km/h |
-     |-----------|---------|---------|
-     | AC OFF    | 3.60 kmpl | 3.40 kmpl |
-     | AC ON     | 3.47 kmpl | 3.27 kmpl |
+   - Whenever the answer contains several data points that vary
+     by condition, speed, gear, or test run, present them as a
+     "tidy" Markdown table: one row per data point, with a
+     column for each distinguishing factor plus a value column.
+     Example shape (adapt the columns to whatever the context
+     actually reports — do not force AC ON/OFF if that's not the
+     variable here):
+     | Condition | Speed  | Fuel Economy |
+     |-----------|--------|--------------|
+     | Unladen   | 55 kmph | 6.19 kmpl   |
+     | Overall   | 40 kmph | 4.20 kmpl   |
+     | Overall   | 55 kmph | 3.83 kmpl   |
+   - Only include a row when every value in it is present in the
+     context. Never pad a table with empty or "N/A" cells to make
+     it look like a complete grid.
    - Always put a blank line before and after every table.
    - Use bullet points (not tables) for single, non-comparative
      values.
@@ -260,6 +303,16 @@ QUESTION:
         answer = answer.replace(
             "km/h·s⁻¹",
             "Kmph/Sec"
+        )
+        # Normalize every stray speed-unit variant (including
+        # superscript/exponent forms like "km h⁻¹" or "km h-1")
+        # down to a single plain "kmph" so nothing renders as a
+        # broken superscript in the UI.
+        answer = re.sub(
+            r"km\s*/?\s*h(?:\s*(?:⁻\s*1|-\s*1|\^-1))?",
+            "kmph",
+            answer,
+            flags=re.IGNORECASE
         )
         # NOTE: only collapse repeated SPACES/TABS, never newlines.
         # The old r"\s{2,}" pattern also matched newlines, which

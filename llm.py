@@ -37,9 +37,14 @@ Rules:
 
 1. Use ONLY the supplied context.
 2. Never hallucinate.
-3. Give exact values from documents.
+3. Give exact values from documents, copied exactly
+   (same digits, same units) — never round or shorten a value.
 4. Extract data correctly from tables.
-5. Give concise and direct answers.
+5. When the context contains multiple related data points
+   (e.g. several conditions, speeds, or gears), report ALL of
+   them — completeness matters more than brevity here. Keep the
+   answer direct and free of unnecessary commentary, but do not
+   omit a data point just to keep the answer short.
 6. If information is not available, reply exactly:
 
 Information not found in documents.
@@ -51,7 +56,7 @@ Information not found in documents.
                     }
                 ],
                 temperature=0,
-                max_tokens=1000
+                max_tokens=2000
             )
 
             return (
