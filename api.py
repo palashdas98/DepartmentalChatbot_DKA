@@ -20,7 +20,7 @@ from hybrid_retriever import bm25_rerank
 app = FastAPI(
     title="Department Knowledge Assistant API",
     description="RAG-based PDF Question Answering System",
-    version="4.0"
+    version="4.1"
 )
 
 
@@ -70,7 +70,7 @@ def home():
     return {
         "status": "running",
         "application": "Department Knowledge Assistant API",
-        "version": "4.0"
+        "version": "4.1"
     }
 
 
@@ -112,11 +112,13 @@ def chat(request: QuestionRequest):
 
         lower_question = question.lower()
 
-        if (
+        is_fuel_economy_query = (
             "fuel economy" in lower_question
             or "mileage" in lower_question
             or "fe" in lower_question
-        ):
+        )
+
+        if is_fuel_economy_query:
 
             search_query += """
             fuel economy
@@ -125,6 +127,11 @@ def chat(request: QuestionRequest):
             km/l
             FE
             fuel consumption
+            laden
+            unladen
+            overall
+            40 kmph
+            55 kmph
             """
 
         elif "acceleration" in lower_question:
@@ -153,9 +160,16 @@ def chat(request: QuestionRequest):
         # VECTOR SEARCH
         # =============================================
 
+        # Fuel-economy answers need more source rows (Unladen/
+        # Laden/Overall x 40/55 kmph) than a typical question, and
+        # those rows are often split across more chunks — widen
+        # both the candidate pool and the reranked top_k for
+        # those questions specifically.
+        search_k = 30 if is_fuel_economy_query else 20
+
         results = vectorstore.similarity_search_with_score(
             search_query,
-            k=20
+            k=search_k
         )
 
         retrieved_docs = [
@@ -167,10 +181,12 @@ def chat(request: QuestionRequest):
         # BM25 RE-RANKING
         # =============================================
 
+        rerank_top_k = 8 if is_fuel_economy_query else 5
+
         docs = bm25_rerank(
             search_query,
             retrieved_docs,
-            top_k=5
+            top_k=rerank_top_k
         )
 
         if not docs:
@@ -213,7 +229,7 @@ DOCUMENT: {source}
 
 PAGE: {page}
 
-{chunk[:1200]}
+{chunk[:2200]}
 """
             )
 
@@ -221,9 +237,12 @@ PAGE: {page}
             context_parts
         )
 
-        # Protect against Groq 413 errors
+        # Protect against Groq token limits
+        # (raised to fit the extra chunks pulled in for
+        # fuel-economy questions; lower this back down if you hit
+        # token-limit errors)
 
-        context = context[:6000]
+        context = context[:14000]
 
         # =============================================
         # PROMPT
@@ -241,9 +260,27 @@ Rules:
 3. Never ignore values present in tables.
 
 4. For Fuel Economy questions:
-   - Provide exact FE values.
-   - Provide mileage values.
-   - Mention test conditions if available.
+   - Report EVERY (condition, speed) data point that actually
+     appears in the context — e.g. Unladen/Laden/Overall at
+     40 kmph and/or 55 kmph — as its OWN table row. Do NOT force
+     the data into a fixed grid of all conditions x all speeds.
+   - If a particular condition/speed combination is not present
+     in the context, simply omit that row. NEVER invent a row,
+     and NEVER fill a missing value with "N/A" or leave a cell
+     blank — a row only exists if the value exists.
+   - Order the rows: Unladen first, then Laden, then Overall;
+     within each condition, 40 kmph before 55 kmph.
+   - Copy every numeric value EXACTLY as given in the context
+     (same digits, same decimal places, same unit). Do not round,
+     truncate, or shorten a value.
+   - Only if L/Ton/100km (load-corrected fuel consumption)
+     figures are present in the context, include them as their
+     own short table or bullet list below the main table. If
+     that data is not in the context, leave it out entirely —
+     do not mention it or say it's unavailable.
+   - Always write speed as "kmph" (e.g. "40 kmph", "55 kmph").
+     NEVER use "km/h", "km h⁻¹", "kmh⁻¹", or any superscript/
+     exponent notation for speed units.
 
 5. For Performance questions:
    Include:
@@ -263,16 +300,29 @@ Rules:
 • 5th Gear : value
 • 6th Gear : value
 
-7. Never show:
+7. FORMATTING (very important):
+   - Whenever the answer contains several data points that vary
+     by condition, speed, gear, or test run, present them as a
+     "tidy" Markdown table: one row per data point, with a
+     column for each distinguishing factor plus a value column.
+   - Only include a row when every value in it is present in the
+     context. Never pad a table with empty or "N/A" cells.
+   - Always put a blank line before and after every table.
+   - Use bullet points (not tables) for single, non-comparative
+     values.
+
+8. Never show:
    - PDF names
    - file names
    - page numbers
    - source names
    - citations
 
-8. Give concise engineering answers.
+9. Give concise engineering answers, but do not omit a data
+   point just to keep the answer short — completeness matters
+   more than brevity when reporting comparative data.
 
-9. Only reply:
+10. Only reply:
 
 Information not found in documents.
 
@@ -375,6 +425,32 @@ QUESTION:
         answer = answer.replace(
             "km/h·s⁻¹",
             "Kmph/Sec"
+        )
+
+        # Normalize every stray speed-unit variant (including
+        # superscript/exponent forms like "km h⁻¹" or "km h-1")
+        # down to a single plain "kmph".
+        answer = re.sub(
+            r"km\s*/?\s*h(?:\s*(?:⁻\s*1|-\s*1|\^-1))?",
+            "kmph",
+            answer,
+            flags=re.IGNORECASE
+        )
+
+        # Only collapse repeated SPACES/TABS, never newlines, so
+        # multi-line Markdown tables don't get squashed together.
+        answer = re.sub(
+            r"[ \t]{2,}",
+            " ",
+            answer
+        )
+
+        # Collapse 3+ blank lines down to a single blank line,
+        # but keep the blank lines tables need to render.
+        answer = re.sub(
+            r"\n{3,}",
+            "\n\n",
+            answer
         )
 
         answer = answer.strip()
