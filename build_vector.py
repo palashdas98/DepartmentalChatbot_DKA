@@ -53,7 +53,7 @@ print(
 # two separate chunks. A split table means retrieval can pull in
 # only half the rows even when top_k is generous.
 splitter = RecursiveCharacterTextSplitter(
-    chunk_size=2200,
+    chunk_size=2000,
     chunk_overlap=400
 )
 
