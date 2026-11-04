@@ -20,7 +20,7 @@ from hybrid_retriever import bm25_rerank
 app = FastAPI(
     title="Department Knowledge Assistant API",
     description="RAG-based PDF Question Answering System",
-    version="4.1"
+    version="4.2"
 )
 
 
@@ -61,6 +61,56 @@ print("✅ Vector Store Loaded Successfully")
 
 
 # =====================================================
+# MODEL-CODE EXACT MATCH
+# =====================================================
+# Pure embedding similarity can silently fail to shortlist the
+# right chunk at all (a question phrased slightly differently can
+# miss data that a near-identical phrasing finds) because the two
+# phrasings embed differently. Since Tata Motors vehicle model
+# codes (e.g. "3522.T", "3023.T", "4221.T") are exact, unambiguous
+# strings, we scan the WHOLE vectorstore for a literal match
+# whenever the question names one — independent of embedding
+# similarity. This guarantees every chunk about that vehicle is
+# found, however many chunks its data got split across.
+
+def extract_model_codes(text):
+    pattern = r'\b(\d{3,4})\s*\.?\s*T\b'
+    codes = set()
+    for num in re.findall(pattern, text, flags=re.IGNORECASE):
+        codes.add(f"{num}.T")
+    return list(codes)
+
+
+def get_all_vectorstore_docs(vs):
+    # Best-effort access to every chunk stored in the FAISS index
+    # via langchain's in-memory docstore. If this internal
+    # structure ever changes in a future langchain version, we
+    # fall back to an empty list rather than erroring out, and the
+    # API just behaves as it did before this fix.
+    try:
+        return list(vs.docstore._dict.values())
+    except AttributeError:
+        return []
+
+
+def find_docs_by_model_code(vs, model_codes):
+    if not model_codes:
+        return []
+    all_docs = get_all_vectorstore_docs(vs)
+    matched = []
+    for doc in all_docs:
+        content_compact = re.sub(
+            r"\s+", "", doc.page_content
+        ).upper()
+        for code in model_codes:
+            code_compact = code.replace(" ", "").upper()
+            if code_compact in content_compact:
+                matched.append(doc)
+                break
+    return matched
+
+
+# =====================================================
 # ROOT
 # =====================================================
 
@@ -70,7 +120,7 @@ def home():
     return {
         "status": "running",
         "application": "Department Knowledge Assistant API",
-        "version": "4.1"
+        "version": "4.2"
     }
 
 
@@ -118,6 +168,10 @@ def chat(request: QuestionRequest):
             or "fe" in lower_question
         )
 
+        is_acceleration_query = "acceleration" in lower_question
+
+        is_performance_query = "performance" in lower_question
+
         if is_fuel_economy_query:
 
             search_query += """
@@ -134,7 +188,7 @@ def chat(request: QuestionRequest):
             55 kmph
             """
 
-        elif "acceleration" in lower_question:
+        elif is_acceleration_query:
 
             search_query += """
             acceleration
@@ -142,9 +196,12 @@ def chat(request: QuestionRequest):
             0-1000 m
             WOT
             driveability
+            panel chart
+            bathtub drivability
+            gradeability
             """
 
-        elif "performance" in lower_question:
+        elif is_performance_query:
 
             search_query += """
             acceleration
@@ -154,38 +211,86 @@ def chat(request: QuestionRequest):
             restart gradeability
             sustainability
             gradeability
+            panel chart
+            bathtub drivability
             """
 
+        model_codes = extract_model_codes(question)
+
         # =============================================
-        # VECTOR SEARCH
+        # RETRIEVAL
         # =============================================
 
-        # Fuel-economy answers need more source rows (Unladen/
-        # Laden/Overall x 40/55 kmph) than a typical question, and
-        # those rows are often split across more chunks — widen
-        # both the candidate pool and the reranked top_k for
-        # those questions specifically.
-        search_k = 30 if is_fuel_economy_query else 20
+        # Exact, embedding-independent match on any model code
+        # mentioned in the question.
+        exact_docs = find_docs_by_model_code(
+            vectorstore,
+            model_codes
+        )
+
+        search_k = (
+            30
+            if (
+                is_fuel_economy_query
+                or is_acceleration_query
+                or is_performance_query
+            )
+            else 20
+        )
 
         results = vectorstore.similarity_search_with_score(
             search_query,
             k=search_k
         )
 
-        retrieved_docs = [
+        semantic_docs = [
             doc
             for doc, score in results
         ]
+
+        # When the question names a model code and we found exact
+        # matches for it, use ONLY those — mixing in semantic
+        # candidates risks pulling in a different vehicle's report
+        # (e.g. a similarly-worded doc for a different model
+        # number) that eats into the context budget and can
+        # distract the LLM into citing the wrong vehicle's
+        # figures. Only fall back to the semantic candidates when
+        # no model code was found (or it found nothing), so
+        # general questions still work as before.
+        source_docs = exact_docs if exact_docs else semantic_docs
+
+        seen_keys = set()
+        deduped_docs = []
+        for doc in source_docs:
+            key = (
+                doc.metadata.get("source", "Unknown"),
+                doc.metadata.get("page", "N/A"),
+                doc.page_content[:80]
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped_docs.append(doc)
 
         # =============================================
         # BM25 RE-RANKING
         # =============================================
 
-        rerank_top_k = 8 if is_fuel_economy_query else 5
+        # When we found exact model-code matches, trust them
+        # fully: BM25-rerank only decides their ORDER, it never
+        # drops one — each already names the vehicle asked about.
+        # Only fall back to a smaller top_k when there's no model
+        # code to anchor on.
+        if exact_docs:
+            rerank_top_k = min(len(deduped_docs), 14)
+        elif is_fuel_economy_query:
+            rerank_top_k = 8
+        else:
+            rerank_top_k = 5
 
         docs = bm25_rerank(
             search_query,
-            retrieved_docs,
+            deduped_docs,
             top_k=rerank_top_k
         )
 
@@ -201,8 +306,26 @@ def chat(request: QuestionRequest):
         # BUILD CONTEXT
         # =============================================
 
+        # Stop adding chunks once the budget is reached rather
+        # than slicing the final joined string — slicing mid
+        # string could cut a chunk (and a table row) in half;
+        # stopping at a whole chunk boundary never does, and keeps
+        # the highest-priority chunks fully intact.
+        #
+        # Groq's free/on_demand tier for openai/gpt-oss-20b caps
+        # total tokens per request (prompt + completion) at 8000
+        # TPM. 9000 characters of context keeps the full request
+        # (rules text + system prompt + context + completion)
+        # safely under that cap — see llm.py's max_tokens comment
+        # for the full budget breakdown. Raising this risks the
+        # "Request too large" 413 error unless max_tokens there is
+        # lowered to compensate.
+
+        MAX_CONTEXT_CHARS = 9000
+
         context_parts = []
         seen_chunks = set()
+        total_len = 0
 
         for doc in docs:
 
@@ -223,26 +346,23 @@ def chat(request: QuestionRequest):
                 "N/A"
             )
 
-            context_parts.append(
-                f"""
+            piece = f"""
 DOCUMENT: {source}
 
 PAGE: {page}
 
 {chunk[:2200]}
 """
-            )
+
+            if total_len + len(piece) > MAX_CONTEXT_CHARS:
+                break
+
+            context_parts.append(piece)
+            total_len += len(piece)
 
         context = "\n\n".join(
             context_parts
         )
-
-        # Protect against Groq token limits
-        # (raised to fit the extra chunks pulled in for
-        # fuel-economy questions; lower this back down if you hit
-        # token-limit errors)
-
-        context = context[:14000]
 
         # =============================================
         # PROMPT
@@ -282,14 +402,25 @@ Rules:
      NEVER use "km/h", "km h⁻¹", "kmh⁻¹", or any superscript/
      exponent notation for speed units.
 
-5. For Performance questions:
-   Include:
-   - 0-60 kmph
-   - 0-1000 m
-   - Acceleration
-   - WOT Driveability
-   - Restart Gradeability
-   - Sustainability
+5. For Performance/Acceleration questions:
+   - If a structured PANEL CHART / Performance & Drivability
+     attribute table is present in the context (rows such as
+     "0-60 kmph", "0-1000 m", gear-and-speed-band rows under
+     "Bathtub Drivability", "Sustain Gradeability", "Restart
+     Gradeability"), treat it as the PRIMARY source and report
+     its absolute values with units (Sec, %, kmph) exactly as
+     given — never round or alter them.
+   - Report the value from the vehicle's own result column
+     (commonly labelled "Current/Gateway" or "Status") — not the
+     "Base Vehicle" or "Competitor Benchmark" column — unless the
+     question specifically asks for a comparison against those.
+   - A relative statement (e.g. "X% inferior/superior to base
+     vehicle") may be added as EXTRA context after the absolute
+     value, but must NEVER replace the absolute value when that
+     value is present in the context.
+   - Always include, when present in the context: 0-60 kmph,
+     0-1000 m, gear-wise Bathtub Drivability times, Sustain
+     Gradeability, Restart Gradeability.
 
 6. For gear-wise values use:
 
@@ -320,7 +451,8 @@ Rules:
 
 9. Give concise engineering answers, but do not omit a data
    point just to keep the answer short — completeness matters
-   more than brevity when reporting comparative data.
+   more than brevity when reporting comparative or panel-chart
+   data.
 
 10. Only reply:
 
@@ -427,9 +559,6 @@ QUESTION:
             "Kmph/Sec"
         )
 
-        # Normalize every stray speed-unit variant (including
-        # superscript/exponent forms like "km h⁻¹" or "km h-1")
-        # down to a single plain "kmph".
         answer = re.sub(
             r"km\s*/?\s*h(?:\s*(?:⁻\s*1|-\s*1|\^-1))?",
             "kmph",
@@ -437,16 +566,12 @@ QUESTION:
             flags=re.IGNORECASE
         )
 
-        # Only collapse repeated SPACES/TABS, never newlines, so
-        # multi-line Markdown tables don't get squashed together.
         answer = re.sub(
             r"[ \t]{2,}",
             " ",
             answer
         )
 
-        # Collapse 3+ blank lines down to a single blank line,
-        # but keep the blank lines tables need to render.
         answer = re.sub(
             r"\n{3,}",
             "\n\n",
@@ -497,6 +622,8 @@ QUESTION:
             "question": question,
 
             "answer": answer,
+
+            "model_codes_detected": model_codes,
 
             "retrieved_chunks": len(docs),
 
