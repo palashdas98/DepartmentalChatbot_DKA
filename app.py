@@ -98,6 +98,99 @@ def find_docs_by_model_code(vs, model_codes):
 
 
 # =====================================================
+# DOCUMENT-TYPE FILTER
+# =====================================================
+# A vehicle model code (e.g. "3525.T") can appear in MULTIPLE
+# different reports for the same vehicle — a Performance
+# evaluation PDF AND a separate Fuel/Fluid Economy evaluation PDF.
+# Exact model-code matching alone can't tell these apart, so a
+# pure Performance question was pulling in Fluid Economy data (and
+# vice versa) just because both documents mention the same model
+# code. These report types name themselves in their own filenames
+# (e.g. "...Performance evaluation on Signa 3525.T...pdf" vs
+# "...Fluid Economy evaluation on Signa 3525.T...pdf"), so filter
+# by filename once the question's intent (FE vs PD) is known.
+FE_FILENAME_KEYWORDS = ["fuel economy", "fluid economy"]
+PD_FILENAME_KEYWORDS = ["performance"]
+
+
+def filter_docs_by_report_type(docs, is_fuel_economy_query, is_pd_query):
+    # Only filter when the question is clearly about ONE report
+    # type and not the other — an ambiguous/general question is
+    # left unfiltered.
+    if is_fuel_economy_query and not is_pd_query:
+        keywords = FE_FILENAME_KEYWORDS
+    elif is_pd_query and not is_fuel_economy_query:
+        keywords = PD_FILENAME_KEYWORDS
+    else:
+        return docs
+
+    filtered = [
+        doc
+        for doc in docs
+        if any(
+            kw in doc.metadata.get("source", "").lower()
+            for kw in keywords
+        )
+    ]
+    # If filename-based filtering happens to eliminate everything
+    # (e.g. a PDF that doesn't follow this naming convention),
+    # fall back to the unfiltered list rather than returning
+    # nothing for a vehicle that genuinely has data.
+    return filtered if filtered else docs
+
+
+# =====================================================
+# STRUCTURED-TABLE PRIORITIZATION
+# =====================================================
+# Within a Performance report, the authoritative numbers live in
+# the Panel Chart / "Performance Data Summary" attribute table —
+# not in narrative prose elsewhere in the same PDF (which can
+# contain only partial or relative figures). Split retrieved
+# chunks into "structured" (contains a recognizable attribute-table
+# marker) and "other", then rerank and fill the chunk budget from
+# the structured group FIRST, only falling back to "other" chunks
+# if there aren't enough structured ones to fill it.
+STRUCTURED_TABLE_MARKERS = [
+    "panel chart",
+    "current/gateway",
+    "current / gateway",
+    "performance data summary",
+    "bath-tub",
+    "bathtub",
+]
+
+
+def prioritize_structured_chunks(search_query, docs, top_k):
+    structured = [
+        doc
+        for doc in docs
+        if any(
+            marker in doc.page_content.lower()
+            for marker in STRUCTURED_TABLE_MARKERS
+        )
+    ]
+    other = [
+        doc
+        for doc in docs
+        if doc not in structured
+    ]
+
+    structured_ranked = bm25_rerank(
+        search_query,
+        structured,
+        top_k=top_k
+    )
+    remaining = top_k - len(structured_ranked)
+    other_ranked = (
+        bm25_rerank(search_query, other, top_k=remaining)
+        if remaining > 0
+        else []
+    )
+    return structured_ranked + other_ranked
+
+
+# =====================================================
 # USER INPUT
 # =====================================================
 question = st.text_input(
@@ -206,6 +299,15 @@ if question:
     # found nothing), so general questions still work as before.
     source_docs = exact_docs if exact_docs else semantic_docs
 
+    # Same model code can appear in both a Performance report and
+    # a separate Fuel/Fluid Economy report for that vehicle — keep
+    # only the report type the question is actually asking about.
+    source_docs = filter_docs_by_report_type(
+        source_docs,
+        is_fuel_economy_query,
+        is_pd_query
+    )
+
     seen_keys = set()
     deduped_docs = []
     for doc in source_docs:
@@ -233,11 +335,22 @@ if question:
     else:
         rerank_top_k = 5
 
-    docs = bm25_rerank(
-        search_query,
-        deduped_docs,
-        top_k=rerank_top_k
-    )
+    if is_pd_query:
+        # For performance questions, fill the chunk budget from
+        # the authoritative Panel Chart / Performance Data Summary
+        # table first — this is what keeps narrative/partial-data
+        # chunks from crowding out the real attribute table.
+        docs = prioritize_structured_chunks(
+            search_query,
+            deduped_docs,
+            top_k=rerank_top_k
+        )
+    else:
+        docs = bm25_rerank(
+            search_query,
+            deduped_docs,
+            top_k=rerank_top_k
+        )
     # =================================================
     # CONTEXT BUILDING
     # =================================================
@@ -350,7 +463,25 @@ Rules:
       - A relative statement ("X% inferior/superior to base
         vehicle") may be added as EXTRA context after an absolute
         value, but must NEVER replace the absolute value.
-   c) WHAT TO INCLUDE, when present in the chosen table's Test
+   c) COLUMN-SWAP SAFEGUARD (apply this check to every row before
+      writing it — this is how to tell the columns apart even if
+      headers are unclear or jumbled in the extracted text):
+      - The Target / PALS value is a pass/fail THRESHOLD and is
+        ALWAYS written with a "≤" or "≥" symbol (e.g. "≤66.30",
+        "≥22.04") — never a bare number.
+      - The actual measured Test Vehicle / Current-Gateway /
+        Status result is ALWAYS a plain number with NO "≤" or "≥"
+        symbol (e.g. "65.49", "22.56").
+      - If you are about to put a value WITH a "≤"/"≥" symbol into
+        a "Result" / "Test Vehicle" / "Current-Gateway" column or
+        field, STOP — that value belongs in the Target column
+        instead, and you have the two swapped. Re-check and
+        correct before writing the final answer.
+      - When presenting a Result-vs-Target comparison table, the
+        "Result" column must contain ONLY plain numbers (no ≤/≥),
+        and the "Target"/"Benchmark" column is the only one that
+        may contain a ≤/≥ symbol.
+   d) WHAT TO INCLUDE, when present in the chosen table's Test
       Vehicle column:
       - 0-60 kmph and 0-1000 m acceleration times, in seconds.
       - Gear-wise times from the "Bath-Tub Drivability" (or
